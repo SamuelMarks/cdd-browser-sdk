@@ -1,0 +1,18 @@
+{
+  "name": "cdd-ctl-wasm-sdk",
+  "version": "0.1.0",
+  "description": "Browser-native SDK for executing cdd-* OpenAPI generators via WASM",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "author": "Samuel Marks",
+  "license": "MIT",
+  "dependencies": {
+    "@bjorn3/browser_wasi_shim": "^0.3.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

@@ -1,0 +1,5 @@
+src/
+*.py
+test.ts
+test.js
+tsconfig.json
