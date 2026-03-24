@@ -10,7 +10,8 @@
   "author": "Samuel Marks",
   "license": "MIT",
   "dependencies": {
-    "@bjorn3/browser_wasi_shim": "^0.3.0"
+    "@bjorn3/browser_wasi_shim": "^0.3.0",
+    "pyodide": "^0.29.3"
   },
   "devDependencies": {
     "typescript": "^5.0.0"
