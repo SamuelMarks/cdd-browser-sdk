@@ -1,15 +1,15 @@
 {
   "c": true,
   "cpp": true,
-  "csharp": false,
+  "csharp": true,
   "go": true,
   "java": true,
   "kotlin": true,
   "php": true,
-  "python-all": false,
-  "ruby": false,
+  "python": true,
+  "ruby": true,
   "rust": true,
-  "sh": false,
+  "sh": true,
   "swift": true,
   "ts": true
 }

@@ -147,29 +147,18 @@ export class CddWasmSdk {
 
         
         
-        if (options.ecosystem === 'cdd-php') {
-            throw new Error("php-wasm execution via ZIP is not yet wired dynamically in this environment.");
-        }
+        
         if (options.ecosystem === 'cdd-sh') {
             throw new Error("mvdan-sh execution via ZIP is not yet wired dynamically in this environment.");
         }
-        if (options.ecosystem === 'cdd-swift') {
-            throw new Error("SwiftWasm not natively installed. Cannot evaluate Swift AST dynamically.");
-        }
+        
 
 
-        if (options.ecosystem === 'cdd-java' || options.ecosystem === 'cdd-kotlin') {
+        if (options.ecosystem === 'cdd-java') {
             throw new Error("CheerpJ execution not yet fully wired in the browser shim environment. Requires cheerpjRunMain with mounted .jar file.");
         }
 
-        if (options.ecosystem === 'cdd-c' || options.ecosystem === 'cdd-cpp') {
-            // Emscripten compiled as a JS wrapper!
-            const textDecoder = new TextDecoder();
-            const sourceCode = textDecoder.decode(buffer as ArrayBuffer);
-            // This is complex as it requires an eval context or script tag which violates
-            // many CSP rules. We should ideally compile to true standalone WASI.
-            throw new Error("Emscripten JS wrappers are not yet supported dynamically");
-        }
+        
         
         const module = await WebAssembly.compile(buffer as ArrayBuffer);
     
