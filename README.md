@@ -8,7 +8,7 @@ This library is a pure-JavaScript (TypeScript) wrapper that executes the underly
 npm install cdd-ctl-wasm-sdk
 ```
 
-*(Note: Depending on your build environment, you may need a bundler that supports top-level await and WebAssembly file fetching like Webpack 5 or Vite).*
+_(Note: Depending on your build environment, you may need a bundler that supports top-level await and WebAssembly file fetching like Webpack 5 or Vite)._
 
 ## Usage
 
@@ -21,27 +21,28 @@ const response = await fetch("https://example.com/assets/wasm/cdd-python.wasm");
 const wasmBinary = await response.arrayBuffer();
 
 const openApiSpec = JSON.stringify({
-    "openapi": "3.2.0",
-    "info": { "title": "Test SDK", "version": "1.0.0" }
-    // ...
+  openapi: "3.2.0",
+  info: { title: "Test SDK", version: "1.0.0" },
+  // ...
 });
 
 const generatedFiles = await CddWasmSdk.fromOpenApi({
-    ecosystem: "cdd-python",
-    target: "to_sdk",
-    specContent: openApiSpec,
-    wasmBinary: wasmBinary,
-    printStdout: true
+  ecosystem: "cdd-python",
+  target: "to_sdk",
+  specContent: openApiSpec,
+  wasmBinary: wasmBinary,
+  printStdout: true,
 });
 
 // Output generated SDK files
 for (const file of generatedFiles) {
-    console.log(`Generated: ${file.path}`);
-    const textContent = new TextDecoder().decode(file.content);
-    console.log(textContent);
+  console.log(`Generated: ${file.path}`);
+  const textContent = new TextDecoder().decode(file.content);
+  console.log(textContent);
 }
 ```
 
 ## Supported Ecosystems
+
 All natively supported `cdd-ctl` ecosystems can be run natively in the browser so long as the `wasm32-wasi` variant is loaded via the `wasmBinary` parameter:
 `cdd-c`, `cdd-cpp`, `cdd-csharp`, `cdd-go`, `cdd-java`, `cdd-kotlin`, `cdd-php`, `cdd-python`, `cdd-ruby`, `cdd-rust`, `cdd-swift`, `cdd-ts`.
