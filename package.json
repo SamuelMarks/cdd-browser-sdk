@@ -5,7 +5,9 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "author": "Samuel Marks",
   "license": "MIT",
@@ -14,6 +16,8 @@
     "pyodide": "^0.29.3"
   },
   "devDependencies": {
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^1.6.0",
+    "@vitest/coverage-v8": "^1.6.0"
   }
 }

@@ -20,6 +20,7 @@ export type Ecosystem =
   | "cdd-kotlin"
   | "cdd-php"
   | "cdd-python"
+  | "cdd-python-all"
   | "cdd-ruby"
   | "cdd-rust"
   | "cdd-sh"
@@ -78,8 +79,13 @@ export class CddWasmSdk {
     const specFile = new File(specData);
     const outDir = new Directory(new Map<string, Inode>());
 
+    const isJson = typeof options.specContent === 'string'
+      ? options.specContent.trim().startsWith('{')
+      : new TextDecoder().decode(options.specContent).trim().startsWith('{');
+    const specFileName = isJson ? "spec.json" : "spec.yaml";
+
     const rootMap = new Map<string, Inode>([
-      ["spec.json", specFile],
+      [specFileName, specFile],
       ["out", outDir],
     ]);
 
@@ -90,7 +96,7 @@ export class CddWasmSdk {
       "from_openapi",
       options.target,
       "-i",
-      "/spec.json",
+      `/${specFileName}`,
       "-o",
       "/out",
       ...(options.additionalArgs || []),
@@ -118,9 +124,10 @@ export class CddWasmSdk {
         ? options.wasmBinary.buffer
         : options.wasmBinary;
 
-    if (options.ecosystem === "cdd-python") {
+    if (options.ecosystem === "cdd-python" || options.ecosystem === "cdd-python-all") {
       // @ts-ignore
       const { loadPyodide } =
+// @ts-ignore
         await import("https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.mjs");
       const pyodide = await loadPyodide({
         indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.0/full/",
@@ -131,41 +138,66 @@ export class CddWasmSdk {
       await micropip.install("python-cdd");
 
       // unpack zip
-      pyodide.unpackArchive(buffer as ArrayBuffer, "zip", {
+      const arrayBuf = options.wasmBinary instanceof Uint8Array
+        ? options.wasmBinary.buffer.slice(
+            options.wasmBinary.byteOffset,
+            options.wasmBinary.byteOffset + options.wasmBinary.byteLength
+          )
+        : options.wasmBinary;
+      pyodide.unpackArchive(arrayBuf, "zip", {
         extractDir: "/cdd_src",
       });
 
-      // mount spec.json
-      const specContentStr =
-        typeof options.specContent === "string"
-          ? options.specContent
-          : new TextDecoder().decode(options.specContent);
-      pyodide.FS.writeFile("/spec.json", specContentStr);
+      // mount spec.json if provided
+      if (options.specContent) {
+        const specContentStr =
+          typeof options.specContent === "string"
+            ? options.specContent
+            : new TextDecoder().decode(options.specContent);
+        pyodide.FS.writeFile(`/${specFileName}`, specContentStr);
+      }
       pyodide.FS.mkdir("/out");
 
       const sys = pyodide.pyimport("sys");
-      sys.path.append("/cdd_src");
       sys.argv.clear();
-      [
-        "cdd-python",
-        "from_openapi",
-        options.target,
-        "-i",
-        "/spec.json",
-        "-o",
-        "/out",
-      ]
-        .concat(options.additionalArgs || [])
-        .forEach((a) => sys.argv.append(a));
 
-      await pyodide.runPythonAsync(`
-                import openapi_client.cli
-                try:
-                    openapi_client.cli.main()
-                except SystemExit as e:
-                    if e.code != 0:
-                        raise Exception(f"Failed with exit code {e.code}")
-            `);
+      if (options.ecosystem === "cdd-python-all") {
+        sys.path.append("/cdd_src/src");
+        [
+          "cdd-python-all",
+          "from_openapi",
+          options.target,
+          "-i",
+          `/${specFileName}`,
+          "-o",
+          "/out",
+        ]
+          .concat(options.additionalArgs || [])
+          .forEach((a) => sys.argv.append(a));
+
+        await pyodide.runPythonAsync(`
+                  import openapi_client.cli
+                  try:
+                      openapi_client.cli.main()
+                  except SystemExit as e:
+                      if e.code != 0:
+                          raise Exception(f"Failed with exit code {e.code}")
+              `);
+      } else {
+        sys.path.append("/cdd_src");
+        ["cdd"]
+          .concat(options.additionalArgs || [])
+          .forEach((a) => sys.argv.append(a));
+
+        await pyodide.runPythonAsync(`
+                  import cdd.__main__
+                  try:
+                      cdd.__main__.main()
+                  except SystemExit as e:
+                      if e.code != 0:
+                          raise Exception(f"Failed with exit code {e.code}")
+              `);
+      }
 
       const results: GeneratedFile[] = [];
       function readPyDir(dirPath: string, basePath: string) {
