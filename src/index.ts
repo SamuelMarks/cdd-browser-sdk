@@ -93,6 +93,7 @@ export class CddWasmSdk {
 
     const args = [
       options.ecosystem,
+      ...(options.ecosystem === "cdd-ruby" ? ["/bin/cdd-ruby"] : []),
       "from_openapi",
       options.target,
       "-i",
