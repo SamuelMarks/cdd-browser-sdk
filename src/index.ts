@@ -223,18 +223,6 @@ export class CddWasmSdk {
       return results;
     }
 
-    if (options.ecosystem === "cdd-sh") {
-      throw new Error(
-        "mvdan-sh execution via ZIP is not yet wired dynamically in this environment.",
-      );
-    }
-
-    if (options.ecosystem === "cdd-java") {
-      throw new Error(
-        "CheerpJ execution not yet fully wired in the browser shim environment. Requires cheerpjRunMain with mounted .jar file.",
-      );
-    }
-
     const module = await WebAssembly.compile(buffer as ArrayBuffer);
 
     const instance = await WebAssembly.instantiate(module, {
