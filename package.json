@@ -2,8 +2,8 @@
   "name": "cdd-ctl-wasm-sdk",
   "version": "0.1.0",
   "description": "Browser-native SDK for executing cdd-* OpenAPI generators via WASM",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
