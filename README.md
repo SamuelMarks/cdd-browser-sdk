@@ -17,7 +17,7 @@ import { CddWasmSdk } from "cdd-ctl-wasm-sdk";
 
 // Example: Fetch your required cdd-language WASM binary
 // Usually downloaded directly from GitHub releases or bundled with your frontend
-const response = await fetch("https://example.com/assets/wasm/cdd-python.wasm");
+const response = await fetch("https://github.com/offscale/cdd-python/releases/download/latest/cdd-python.wasm");
 const wasmBinary = await response.arrayBuffer();
 
 const openApiSpec = JSON.stringify({
