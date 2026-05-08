@@ -103,7 +103,13 @@ export class CddWasmSdk {
       ...(options.additionalArgs || []),
     ];
 
-    const env: string[] = [];
+    console.log("ARGS PASSED:", args.slice(1));
+const env: string[] = [
+      `CDD_COMMAND=${args.includes('from_openapi') ? 'from_openapi' : args[1]}`,
+      `CDD_ARGS=${args.slice(1).join(" ")}`,
+      `INPUT=/${specFileName}`,
+      `OUTPUT_DIR=/out`
+    ];
 
     const fds = [
       new OpenFile(new File(new Uint8Array([]))),
