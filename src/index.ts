@@ -97,6 +97,7 @@ let cddTsStdout = "";
     const args = [
       options.ecosystem,
       ...(options.ecosystem === "cdd-ruby" ? ["/bin/cdd-ruby"] : []),
+      ...(options.ecosystem === "cdd-php" ? ["/cdd-php"] : []),
       "from_openapi",
       options.target,
       "-i",
@@ -111,7 +112,7 @@ const env: string[] = [
       `CDD_COMMAND=${args.includes('from_openapi') ? 'from_openapi' : args[1]}`,
       `CDD_ARGS=${args.slice(1).join(" ")}`,
       `INPUT=/${specFileName}`,
-      `OUTPUT_DIR=/out`
+      `OUTPUT_DIR=out`
     ];
 
     const fds = [
