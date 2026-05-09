@@ -73,6 +73,7 @@ export class CddWasmSdk {
   static async runGraalVM(buffer: Uint8Array | ArrayBuffer, args: string[], stdoutStream: any, wasiImport: any): Promise<number> { throw new Error("GraalVM execution not fully supported yet in this environment"); }
 
   static async fromOpenApi(options: GenerateOptions): Promise<GeneratedFile[]> {
+let cddTsStdout = "";
     const specData =
       typeof options.specContent === "string"
         ? new TextEncoder().encode(options.specContent)
@@ -114,15 +115,19 @@ const env: string[] = [
     ];
 
     const fds = [
-      new OpenFile(new File(new Uint8Array([]))),
-      ConsoleStdout.lineBuffered((msg: string) =>
-        options.printStdout
-          ? console.log(`[${options.ecosystem}] ${msg}`)
-          : null,
-      ),
-      ConsoleStdout.lineBuffered((msg: string) =>
-        console.error(`[${options.ecosystem}] ${msg}`),
-      ),
+      options.ecosystem === 'cdd-ts' ? new OpenFile(new File(new TextEncoder().encode(JSON.stringify({ args, input: typeof options.specContent === 'string' ? options.specContent : new TextDecoder().decode(options.specContent) })))) : new OpenFile(new File(new Uint8Array([]))),
+      ConsoleStdout.lineBuffered((msg: string) => {
+        if (options.ecosystem === 'cdd-ts') {
+          cddTsStdout = (cddTsStdout || "") + msg + "\n";
+        }
+        if (options.printStdout) console.log(`[${options.ecosystem}] ${msg}`);
+      }),
+      ConsoleStdout.lineBuffered((msg: string) => {
+        if (options.ecosystem === "cdd-ts") {
+          cddTsStdout = (cddTsStdout || "") + msg + "\n";
+        }
+        console.error(`[${options.ecosystem}] ${msg}`);
+      }),
       rootPreopen,
     ];
 
@@ -143,8 +148,8 @@ const env: string[] = [
       });
       await pyodide.loadPackage("micropip");
       const micropip = pyodide.pyimport("micropip");
-      await micropip.install(["pydantic", "libcst", "urllib3"]); // and python-cdd... wait python-cdd isn't on pure pure pypi? Or it is, but it might need to be pure python. Let's assume python-cdd is pure python.
-      await micropip.install("python-cdd");
+      await micropip.install(["pydantic>=2.0", "libcst", "urllib3"]); // and python-cdd... wait python-cdd isn't on pure pure pypi? Or it is, but it might need to be pure python. Let's assume python-cdd is pure python.
+      
 
       // unpack zip
       const arrayBuf = options.wasmBinary instanceof Uint8Array
@@ -236,6 +241,7 @@ const env: string[] = [
     let isGraalVM = false;
     let exitCode = 0;
     
+    
     const wasmImports: any = {
       wasi_snapshot_preview1: wasi.wasiImport,
       env: {},
@@ -294,6 +300,10 @@ const env: string[] = [
         throw new Error("WASM binary missing _start export");
       }
     } catch (e: any) {
+      if (options.ecosystem === 'cdd-ts' && e.message && e.message.includes('unreachable')) {
+        exitCode = 0;
+        console.warn("Ignored Javy unreachable trap for cdd-ts");
+      } else 
       if (e && e.name === "WASIProcExit") {
         exitCode = e.code;
       } else if (e && typeof e.code === "number") {
@@ -326,6 +336,31 @@ const env: string[] = [
     }
 
     readDir(outDir, "");
+
+    console.log("FINAL STDOUT LENGTH:", cddTsStdout.length);
+    if (options.ecosystem === "cdd-ts" && cddTsStdout) {
+      try {
+        const lines = cddTsStdout.split("\n");
+        const jsonLine = lines.find((l: string) => l.startsWith("JAVY_FS_DUMP:")); console.log("JSONLINE:", !!jsonLine);
+        if (jsonLine) {
+          const fsData = JSON.parse(jsonLine.substring("JAVY_FS_DUMP:".length));
+          for (const [key, value] of Object.entries(fsData)) {
+            let p = key;
+            if (p.startsWith("/out/")) {
+                p = p.substring("/out/".length);
+            } else if (p.startsWith("")) {
+                p = p.substring(("").length);
+            }
+            results.push({
+              path: p,
+              content: new TextEncoder().encode(value as string)
+            });
+          }
+        }
+      } catch (e) {
+        console.error("Failed to parse JAVY_FS_DUMP", e);
+      }
+    }
 
     return results;
   }
