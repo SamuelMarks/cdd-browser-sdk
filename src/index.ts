@@ -63,6 +63,43 @@ export interface GeneratedFile {
 /**
  * The CDD WebAssembly SDK class for executing generators.
  */
+
+function getCustomSection(buffer: ArrayBuffer | ArrayBufferLike, sectionName: string): Uint8Array | null {
+    const view = new Uint8Array(buffer);
+    let offset = 8;
+    while (offset < view.length) {
+        const id = view[offset++];
+        let size = 0;
+        let shift = 0;
+        while (true) {
+            const byte = view[offset++];
+            size |= (byte & 0x7f) << shift;
+            shift += 7;
+            if ((byte & 0x80) === 0) break;
+        }
+        if (id === 0) {
+            const startOffset = offset;
+            let nameLen = 0;
+            shift = 0;
+            while (true) {
+                const byte = view[offset++];
+                nameLen |= (byte & 0x7f) << shift;
+                shift += 7;
+                if ((byte & 0x80) === 0) break;
+            }
+            const name = new TextDecoder().decode(view.slice(offset, offset + nameLen));
+            offset += nameLen;
+            if (name === sectionName) {
+                return view.slice(offset, startOffset + size);
+            }
+            offset = startOffset + size;
+        } else {
+            offset += size;
+        }
+    }
+    return null;
+}
+
 export class CddWasmSdk {
   /**
    * Generates code from an OpenAPI specification using the provided WASM binary.
@@ -87,17 +124,45 @@ let cddTsStdout = "";
       : new TextDecoder().decode(options.specContent).trim().startsWith('{');
     const specFileName = isJson ? "spec.json" : "spec.yaml";
 
+    const buffer =
+      options.wasmBinary instanceof Uint8Array
+        ? options.wasmBinary.buffer
+        : options.wasmBinary;
+
     const rootMap = new Map<string, Inode>([
       [specFileName, specFile],
       ["out", outDir],
     ]);
+
+    if (options.ecosystem === "cdd-php") {
+        const payloadBytes = getCustomSection(buffer, 'cdd-php-payload');
+        if (payloadBytes) {
+            const jsonStr = new TextDecoder().decode(payloadBytes);
+            const bundle = JSON.parse(jsonStr);
+            
+            for (const [filePath, contentStr] of Object.entries(bundle)) {
+                const parts = filePath.split('/');
+                const fileName = parts.pop();
+                let currentDir = rootMap;
+                for (const part of parts) {
+                    if (!currentDir.has(part)) {
+                        currentDir.set(part, new Directory(new Map()));
+                    }
+                    currentDir = (currentDir.get(part) as Directory).contents;
+                }
+                currentDir.set(fileName!, new File(new TextEncoder().encode(contentStr as string)));
+            }
+        } else {
+            console.warn("Could not find cdd-php-payload custom section");
+        }
+    }
 
     const rootPreopen = new PreopenDirectory("/", rootMap);
 
     const args = [
       options.ecosystem,
       ...(options.ecosystem === "cdd-ruby" ? ["/bin/cdd-ruby"] : []),
-      ...(options.ecosystem === "cdd-php" ? ["/cdd-php"] : []),
+      ...(options.ecosystem === "cdd-php" ? ["-q", "/bin/cdd-php"] : []),
       "from_openapi",
       options.target,
       "-i",
@@ -108,7 +173,10 @@ let cddTsStdout = "";
     ];
 
     console.log("ARGS PASSED:", args.slice(1));
-const env: string[] = [
+const env: string[] = options.ecosystem === "cdd-php" ? [
+      `INPUT=/${specFileName}`,
+      `OUTPUT_DIR=out`
+    ] : [
       `CDD_COMMAND=${args.includes('from_openapi') ? 'from_openapi' : args[1]}`,
       `CDD_ARGS=${args.slice(1).join(" ")}`,
       `INPUT=/${specFileName}`,
@@ -134,11 +202,6 @@ const env: string[] = [
 
     const wasi = new WASI(args, env, fds);
 
-    const buffer =
-      options.wasmBinary instanceof Uint8Array
-        ? options.wasmBinary.buffer
-        : options.wasmBinary;
-
     if (options.ecosystem === "cdd-python" || options.ecosystem === "cdd-python-all") {
       // @ts-ignore
       const { loadPyodide } =
@@ -149,7 +212,7 @@ const env: string[] = [
       });
       await pyodide.loadPackage("micropip");
       const micropip = pyodide.pyimport("micropip");
-      await micropip.install(["pydantic>=2.0", "libcst", "urllib3"]); // and python-cdd... wait python-cdd isn't on pure pure pypi? Or it is, but it might need to be pure python. Let's assume python-cdd is pure python.
+      await micropip.install(["pydantic<2.0", "libcst", "urllib3"]); // and python-cdd... wait python-cdd isn't on pure pure pypi? Or it is, but it might need to be pure python. Let's assume python-cdd is pure python.
       
 
       // unpack zip
@@ -292,11 +355,10 @@ const env: string[] = [
     const instance = await WebAssembly.instantiate(module, wasmImports);
 
     try {
-      if ((instance as any).exports._start) {
+      if ((instance as any).exports.from_openapi) { wasi.initialize(instance as any); try { exitCode = (instance as any).exports.from_openapi(); } catch(e: any) { if(e&&e.name==="WASIProcExit") exitCode=e.code; else throw e; } } else if ((instance as any).exports._start) {
         exitCode = wasi.start(instance as any);
       } else if ((instance as any).exports.main) {
-        isGraalVM = true;
-        console.warn("GraalVM execution dummy fallback"); throw new Error("GraalVM Execution currently not supported in this runtime.");
+        isGraalVM = true; throw new Error("GraalVM Execution currently not supported in this runtime.");
       } else {
         throw new Error("WASM binary missing _start export");
       }
