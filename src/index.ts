@@ -134,6 +134,43 @@ let cddTsStdout = "";
       ["out", outDir],
     ]);
 
+
+    if (options.ecosystem === "cdd-java") {
+      let CddJavaBrowser;
+      try {
+        // @ts-ignore
+        const mod = await import("cdd-java-cli");
+        CddJavaBrowser = mod.CddJavaBrowser;
+      } catch (e) {
+        throw new Error("cdd-java-cli is not installed or available for WasmGC execution.");
+      }
+      
+      const engine = new CddJavaBrowser(options.wasmBinary);
+      const specContentStr =
+          typeof options.specContent === "string"
+            ? options.specContent
+            : new TextDecoder().decode(options.specContent);
+      let res;
+      if (options.target === "to_server") {
+          res = await engine.generateServer(specContentStr);
+      } else if (options.target === "to_sdk_cli") {
+          res = await engine.generateSdkCli(specContentStr, !!options.additionalArgs?.includes('--no-github-actions'), !!options.additionalArgs?.includes('--no-installable-package'));
+      } else {
+          // @ts-ignore
+          if (options.target === "to_orm") { res = await engine.generateOrm(specContentStr); }
+          else { res = await engine.generateSdk(specContentStr); }
+      }
+      
+      const results: GeneratedFile[] = [];
+      for (const [path, content] of Object.entries(res.files)) {
+          results.push({
+              path: path,
+              content: new TextEncoder().encode(content as string)
+          });
+      }
+      return results;
+    }
+
     if (options.ecosystem === "cdd-php") {
         const payloadBytes = getCustomSection(buffer, 'cdd-php-payload');
         if (payloadBytes) {
