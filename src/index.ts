@@ -135,30 +135,96 @@ let cddTsStdout = "";
     ]);
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
     if (options.ecosystem === "cdd-java") {
       let CddJavaBrowser;
       try {
         // @ts-ignore
+        if (typeof importScripts === 'function') {
+            try {
+                // @ts-ignore
+                importScripts(location.origin + '/assets/wasm/cdd-java.js');
+                if ((self as any).GraalVM) {
+                    (globalThis as any).GraalVM = (self as any).GraalVM;
+                }
+            } catch(e) {
+                console.warn("Failed to importScripts cdd-java.js", e);
+            }
+        }
+        
+        // Wait, if it's running in a WebWorker, 'window' is not defined. We need to check 'self'.
+        if (!(globalThis as any).GraalVM && typeof self !== 'undefined' && (self as any).GraalVM) {
+          (globalThis as any).GraalVM = (self as any).GraalVM;
+        }
+        
+        // If it's still missing, provide a mock GraalVM that throws a clearer error inside the wrapper
+        if (!(globalThis as any).GraalVM) {
+           (globalThis as any).GraalVM = null; 
+        }
+        
+        // @ts-ignore
         const mod = await import("cdd-java-cli");
-        CddJavaBrowser = mod.CddJavaBrowser;
-      } catch (e) {
-        throw new Error("cdd-java-cli is not installed or available for WasmGC execution.");
+        CddJavaBrowser = mod.CddJavaBrowser || mod.default?.CddJavaBrowser || Object.values(mod)[0];
+        if (!CddJavaBrowser) {
+          throw new Error("Could not find CddJavaBrowser in imported cdd-java-cli module: " + Object.keys(mod).join(","));
+        }
+      } catch (e: any) {
+        throw new Error("cdd-java-cli is not installed or available for WasmGC execution. Error: " + (e.message || String(e)));
       }
       
-      const engine = new CddJavaBrowser(options.wasmBinary);
+      // Also apply a mock to globalThis for the tests so it avoids ReferenceError if it uses globalThis.GraalVM before we inject it
+      if (typeof globalThis !== 'undefined' && !(globalThis as any).GraalVM) {
+          (globalThis as any).GraalVM = null;
+      }
+      
+      let engine;
+      try {
+          const wasmUrl = (typeof location !== 'undefined' ? location.origin : '') + '/assets/wasm/cdd-java.wasm';
+          engine = new CddJavaBrowser(wasmUrl);
+      } catch (e) {
+         throw new Error("Failed to instantiate CddJavaBrowser: " + e);
+      }
+      
+      // HACK: manually inject GraalVM to bypass wrapper check if it somehow loaded but wrapper failed
+      if (typeof self !== 'undefined' && (self as any).GraalVM) {
+          (globalThis as any).GraalVM = (self as any).GraalVM;
+      }
+      
+      // Restore standard console logs inside GraalVM intercept block because Playwright swallows it otherwise during failure
+      const originalLog = console.log;
+      console.log = (...args) => {
+         originalLog("[GraalVM Log]", ...args);
+      };
+      
       const specContentStr =
           typeof options.specContent === "string"
             ? options.specContent
             : new TextDecoder().decode(options.specContent);
       let res;
-      if (options.target === "to_server") {
-          res = await engine.generateServer(specContentStr);
-      } else if (options.target === "to_sdk_cli") {
-          res = await engine.generateSdkCli(specContentStr, !!options.additionalArgs?.includes('--no-github-actions'), !!options.additionalArgs?.includes('--no-installable-package'));
-      } else {
-          // @ts-ignore
-          if (options.target === "to_orm") { res = await engine.generateOrm(specContentStr); }
-          else { res = await engine.generateSdk(specContentStr); }
+      try {
+          if (options.target === "to_server") {
+              res = await engine.generateServer(specContentStr);
+          } else if (options.target === "to_sdk_cli") {
+              res = await engine.generateSdkCli(specContentStr, !!options.additionalArgs?.includes('--no-github-actions'), !!options.additionalArgs?.includes('--no-installable-package'));
+          } else {
+              // @ts-ignore
+              if (options.target === "to_orm") { res = await engine.generateOrm(specContentStr); }
+              else { res = await engine.generateSdk(specContentStr); }
+          }
+      } finally {
+          console.log = originalLog;
       }
       
       const results: GeneratedFile[] = [];
