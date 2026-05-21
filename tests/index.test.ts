@@ -231,15 +231,17 @@ describe("CddWasmSdk.fromOpenApi", () => {
   // -------------------------------------------------------------------------
 
   it("throws immediately for cdd-sh ecosystem", async () => {
-    await expect(
-      CddWasmSdk.fromOpenApi(baseOptions({ ecosystem: "cdd-sh" })),
-    ).rejects.toThrow("mvdan-sh execution via ZIP is not yet wired");
+    const { WASI } = await import("@bjorn3/browser_wasi_shim");
+    (WASI as ReturnType<typeof vi.fn>).mockImplementationOnce(() =>
+      makeFakeWasi({ exitCode: 0 }),
+    );
+    const result = await CddWasmSdk.fromOpenApi(baseOptions({ ecosystem: "cdd-sh" }));
+    expect(Array.isArray(result)).toBe(true);
   });
 
   it("throws immediately for cdd-java ecosystem", async () => {
-    await expect(
-      CddWasmSdk.fromOpenApi(baseOptions({ ecosystem: "cdd-java" })),
-    ).rejects.toThrow("CheerpJ execution not yet fully wired");
+    const result = await CddWasmSdk.fromOpenApi(baseOptions({ ecosystem: "cdd-java" }));
+    expect(Array.isArray(result)).toBe(true);
   });
 
   // -------------------------------------------------------------------------
