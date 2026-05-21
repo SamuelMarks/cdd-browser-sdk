@@ -148,6 +148,7 @@ let cddTsStdout = "";
 
 
 
+
     if (options.ecosystem === "cdd-java") {
       let CddJavaBrowser;
       try {
@@ -217,11 +218,11 @@ let cddTsStdout = "";
           if (options.target === "to_server") {
               res = await engine.generateServer(specContentStr);
           } else if (options.target === "to_sdk_cli") {
-              res = await engine.generateSdkCli(specContentStr, !!options.additionalArgs?.includes('--no-github-actions'), !!options.additionalArgs?.includes('--no-installable-package'));
+              res = await engine.generateSdkCli(specContentStr, !!options.additionalArgs?.includes('--no-github-actions'), !!options.additionalArgs?.includes('--no-installable-package'), !!options.additionalArgs?.includes('--tests'));
           } else {
               // @ts-ignore
               if (options.target === "to_orm") { res = await engine.generateOrm(specContentStr); }
-              else { res = await engine.generateSdk(specContentStr); }
+              else { res = await engine.generateSdk(specContentStr, !!options.additionalArgs?.includes('--no-github-actions'), !!options.additionalArgs?.includes('--no-installable-package'), !!options.additionalArgs?.includes('--tests')); }
           }
       } finally {
           console.log = originalLog;
