@@ -192,8 +192,9 @@ let cddTsStdout = "";
       
       let engine;
       try {
-          const wasmUrl = (typeof location !== 'undefined' ? location.origin : '') + '/assets/wasm/cdd-java.wasm';
-          engine = new CddJavaBrowser(wasmUrl);
+          const wasmUrl = (options as any).cddJavaWasmUrl || ((typeof location !== 'undefined' ? location.origin : '') + '/assets/wasm/cdd-java.wasm');
+          const jsUrl = (options as any).cddJavaJsUrl || ((typeof location !== 'undefined' ? location.origin : ' ') + '/assets/wasm/cdd-java.js');
+          engine = new CddJavaBrowser(wasmUrl, jsUrl);
       } catch (e) {
          throw new Error("Failed to instantiate CddJavaBrowser: " + e);
       }
