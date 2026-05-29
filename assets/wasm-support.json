@@ -1,9 +1,9 @@
 {
-  "c": false,
-  "cpp": true,
-  "csharp": false,
+  "c": true,
+  "cpp": false,
+  "csharp": true,
   "go": true,
-  "java": false,
+  "java": true,
   "kotlin": true,
   "php": false,
   "python-all": true,

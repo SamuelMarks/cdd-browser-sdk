@@ -28,9 +28,9 @@ export type Ecosystem =
   | "cdd-ts";
 
 /**
- * Supported generation targets.
+ * Supported generation targets, including standard SDK generation targets and docs generation ("to_docs_json").
  */
-export type Target = "to_sdk" | "to_sdk_cli" | "to_server";
+export type Target = "to_sdk" | "to_sdk_cli" | "to_server" | "to_docs_json";
 
 /**
  * Options for generating code from an OpenAPI specification.
@@ -264,14 +264,17 @@ let cddTsStdout = "";
 
     const rootPreopen = new PreopenDirectory("/", rootMap);
 
+        const rootCommandArgs = options.target === "to_docs_json" 
+      ? ["to_docs_json"] 
+      : ["from_openapi", options.target];
+
     const args = [
       options.ecosystem,
       ...(options.ecosystem === "cdd-ruby" ? ["/bin/cdd-ruby"] : []),
       ...(options.ecosystem === "cdd-php" ? ["-q", "/bin/cdd-php"] : []),
-      "from_openapi",
-      options.target,
+      ...rootCommandArgs,
       "-i",
-      `/${specFileName}`,
+      '/' + specFileName,
       "-o",
       "/out",
       ...(options.additionalArgs || []),
