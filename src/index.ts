@@ -64,40 +64,45 @@ export interface GeneratedFile {
  * The CDD WebAssembly SDK class for executing generators.
  */
 
-function getCustomSection(buffer: ArrayBuffer | ArrayBufferLike, sectionName: string): Uint8Array | null {
-    const view = new Uint8Array(buffer);
-    let offset = 8;
-    while (offset < view.length) {
-        const id = view[offset++];
-        let size = 0;
-        let shift = 0;
-        while (true) {
-            const byte = view[offset++];
-            size |= (byte & 0x7f) << shift;
-            shift += 7;
-            if ((byte & 0x80) === 0) break;
-        }
-        if (id === 0) {
-            const startOffset = offset;
-            let nameLen = 0;
-            shift = 0;
-            while (true) {
-                const byte = view[offset++];
-                nameLen |= (byte & 0x7f) << shift;
-                shift += 7;
-                if ((byte & 0x80) === 0) break;
-            }
-            const name = new TextDecoder().decode(view.slice(offset, offset + nameLen));
-            offset += nameLen;
-            if (name === sectionName) {
-                return view.slice(offset, startOffset + size);
-            }
-            offset = startOffset + size;
-        } else {
-            offset += size;
-        }
+function getCustomSection(
+  buffer: ArrayBuffer | ArrayBufferLike,
+  sectionName: string,
+): Uint8Array | null {
+  const view = new Uint8Array(buffer);
+  let offset = 8;
+  while (offset < view.length) {
+    const id = view[offset++];
+    let size = 0;
+    let shift = 0;
+    while (true) {
+      const byte = view[offset++];
+      size |= (byte & 0x7f) << shift;
+      shift += 7;
+      if ((byte & 0x80) === 0) break;
     }
-    return null;
+    if (id === 0) {
+      const startOffset = offset;
+      let nameLen = 0;
+      shift = 0;
+      while (true) {
+        const byte = view[offset++];
+        nameLen |= (byte & 0x7f) << shift;
+        shift += 7;
+        if ((byte & 0x80) === 0) break;
+      }
+      const name = new TextDecoder().decode(
+        view.slice(offset, offset + nameLen),
+      );
+      offset += nameLen;
+      if (name === sectionName) {
+        return view.slice(offset, startOffset + size);
+      }
+      offset = startOffset + size;
+    } else {
+      offset += size;
+    }
+  }
+  return null;
 }
 
 export class CddWasmSdk {
@@ -107,10 +112,19 @@ export class CddWasmSdk {
    * @returns A promise that resolves to an array of generated files.
    * @throws An error if the WASM binary is invalid or execution fails.
    */
-  static async runGraalVM(buffer: Uint8Array | ArrayBuffer, args: string[], stdoutStream: any, wasiImport: any): Promise<number> { throw new Error("GraalVM execution not fully supported yet in this environment"); }
+  static async runGraalVM(
+    buffer: Uint8Array | ArrayBuffer,
+    args: string[],
+    stdoutStream: any,
+    wasiImport: any,
+  ): Promise<number> {
+    throw new Error(
+      "GraalVM execution not fully supported yet in this environment",
+    );
+  }
 
   static async fromOpenApi(options: GenerateOptions): Promise<GeneratedFile[]> {
-let cddTsStdout = "";
+    let cddTsStdout = "";
     const specData =
       typeof options.specContent === "string"
         ? new TextEncoder().encode(options.specContent)
@@ -119,9 +133,10 @@ let cddTsStdout = "";
     const specFile = new File(specData);
     const outDir = new Directory(new Map<string, Inode>());
 
-    const isJson = typeof options.specContent === 'string'
-      ? options.specContent.trim().startsWith('{')
-      : new TextDecoder().decode(options.specContent).trim().startsWith('{');
+    const isJson =
+      typeof options.specContent === "string"
+        ? options.specContent.trim().startsWith("{")
+        : new TextDecoder().decode(options.specContent).trim().startsWith("{");
     const specFileName = isJson ? "spec.json" : "spec.yaml";
 
     const buffer =
@@ -134,139 +149,161 @@ let cddTsStdout = "";
       ["out", outDir],
     ]);
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     if (options.ecosystem === "cdd-java") {
       let CddJavaBrowser;
       try {
         // @ts-ignore
-        if (typeof importScripts === 'function') {
-            try {
-                // @ts-ignore
-                importScripts(location.origin + '/assets/wasm/cdd-java.js');
-                if ((self as any).GraalVM) {
-                    (globalThis as any).GraalVM = (self as any).GraalVM;
-                }
-            } catch(e) {
-                console.warn("Failed to importScripts cdd-java.js", e);
+        if (typeof importScripts === "function") {
+          try {
+            // @ts-ignore
+            importScripts(location.origin + "/assets/wasm/cdd-java.js");
+            if ((self as any).GraalVM) {
+              (globalThis as any).GraalVM = (self as any).GraalVM;
             }
+          } catch (e) {
+            console.warn("Failed to importScripts cdd-java.js", e);
+          }
         }
-        
+
         // Wait, if it's running in a WebWorker, 'window' is not defined. We need to check 'self'.
-        if (!(globalThis as any).GraalVM && typeof self !== 'undefined' && (self as any).GraalVM) {
+        if (
+          !(globalThis as any).GraalVM &&
+          typeof self !== "undefined" &&
+          (self as any).GraalVM
+        ) {
           (globalThis as any).GraalVM = (self as any).GraalVM;
         }
-        
+
         // If it's still missing, provide a mock GraalVM that throws a clearer error inside the wrapper
         if (!(globalThis as any).GraalVM) {
-           (globalThis as any).GraalVM = null; 
+          (globalThis as any).GraalVM = null;
         }
-        
+
         // @ts-ignore
         const mod = await import("cdd-java-cli");
-        CddJavaBrowser = mod.CddJavaBrowser || mod.default?.CddJavaBrowser || Object.values(mod)[0];
+        CddJavaBrowser =
+          mod.CddJavaBrowser ||
+          mod.default?.CddJavaBrowser ||
+          Object.values(mod)[0];
         if (!CddJavaBrowser) {
-          throw new Error("Could not find CddJavaBrowser in imported cdd-java-cli module: " + Object.keys(mod).join(","));
+          throw new Error(
+            "Could not find CddJavaBrowser in imported cdd-java-cli module: " +
+              Object.keys(mod).join(","),
+          );
         }
       } catch (e: any) {
-        throw new Error("cdd-java-cli is not installed or available for WasmGC execution. Error: " + (e.message || String(e)));
+        throw new Error(
+          "cdd-java-cli is not installed or available for WasmGC execution. Error: " +
+            (e.message || String(e)),
+        );
       }
-      
+
       // Also apply a mock to globalThis for the tests so it avoids ReferenceError if it uses globalThis.GraalVM before we inject it
-      if (typeof globalThis !== 'undefined' && !(globalThis as any).GraalVM) {
-          (globalThis as any).GraalVM = null;
+      if (typeof globalThis !== "undefined" && !(globalThis as any).GraalVM) {
+        (globalThis as any).GraalVM = null;
       }
-      
+
       let engine;
       try {
-          const wasmUrl = (options as any).cddJavaWasmUrl || ((typeof location !== 'undefined' ? location.origin : '') + '/assets/wasm/cdd-java.wasm');
-          const jsUrl = (options as any).cddJavaJsUrl || ((typeof location !== 'undefined' ? location.origin : ' ') + '/assets/wasm/cdd-java.js');
-          engine = new CddJavaBrowser(wasmUrl, jsUrl);
+        const wasmUrl =
+          (options as any).cddJavaWasmUrl ||
+          (typeof location !== "undefined" ? location.origin : "") +
+            "/assets/wasm/cdd-java.wasm";
+        const jsUrl =
+          (options as any).cddJavaJsUrl ||
+          (typeof location !== "undefined" ? location.origin : " ") +
+            "/assets/wasm/cdd-java.js";
+        engine = new CddJavaBrowser(wasmUrl, jsUrl);
       } catch (e) {
-         throw new Error("Failed to instantiate CddJavaBrowser: " + e);
+        throw new Error("Failed to instantiate CddJavaBrowser: " + e);
       }
-      
+
       // HACK: manually inject GraalVM to bypass wrapper check if it somehow loaded but wrapper failed
-      if (typeof self !== 'undefined' && (self as any).GraalVM) {
-          (globalThis as any).GraalVM = (self as any).GraalVM;
+      if (typeof self !== "undefined" && (self as any).GraalVM) {
+        (globalThis as any).GraalVM = (self as any).GraalVM;
       }
-      
+
       // Restore standard console logs inside GraalVM intercept block because Playwright swallows it otherwise during failure
       const originalLog = console.log;
       console.log = (...args) => {
-         originalLog("[GraalVM Log]", ...args);
+        originalLog("[GraalVM Log]", ...args);
       };
-      
+
       const specContentStr =
-          typeof options.specContent === "string"
-            ? options.specContent
-            : new TextDecoder().decode(options.specContent);
+        typeof options.specContent === "string"
+          ? options.specContent
+          : new TextDecoder().decode(options.specContent);
       let res;
       try {
-          if (options.target === "to_server") {
-              res = await engine.generateServer(specContentStr);
-          } else if (options.target === "to_sdk_cli") {
-              res = await engine.generateSdkCli(specContentStr, !!options.additionalArgs?.includes('--no-github-actions'), !!options.additionalArgs?.includes('--no-installable-package'), !!options.additionalArgs?.includes('--tests'));
+        if (options.target === "to_server") {
+          res = await engine.generateServer(specContentStr);
+        } else if (options.target === "to_sdk_cli") {
+          res = await engine.generateSdkCli(
+            specContentStr,
+            !!options.additionalArgs?.includes("--no-github-actions"),
+            !!options.additionalArgs?.includes("--no-installable-package"),
+            !!options.additionalArgs?.includes("--tests"),
+          );
+        } else {
+          // @ts-ignore
+          if (options.target === "to_orm") {
+            res = await engine.generateOrm(specContentStr);
           } else {
-              // @ts-ignore
-              if (options.target === "to_orm") { res = await engine.generateOrm(specContentStr); }
-              else { res = await engine.generateSdk(specContentStr, !!options.additionalArgs?.includes('--no-github-actions'), !!options.additionalArgs?.includes('--no-installable-package'), !!options.additionalArgs?.includes('--tests')); }
+            res = await engine.generateSdk(
+              specContentStr,
+              !!options.additionalArgs?.includes("--no-github-actions"),
+              !!options.additionalArgs?.includes("--no-installable-package"),
+              !!options.additionalArgs?.includes("--tests"),
+            );
           }
+        }
       } finally {
-          console.log = originalLog;
+        console.log = originalLog;
       }
-      
+
       const results: GeneratedFile[] = [];
       for (const [path, content] of Object.entries(res.files)) {
-          results.push({
-              path: path,
-              content: new TextEncoder().encode(content as string)
-          });
+        results.push({
+          path: path,
+          content: new TextEncoder().encode(content as string),
+        });
       }
       return results;
     }
 
     if (options.ecosystem === "cdd-php") {
-        const payloadBytes = getCustomSection(buffer, 'cdd-php-payload');
-        if (payloadBytes) {
-            const jsonStr = new TextDecoder().decode(payloadBytes);
-            const bundle = JSON.parse(jsonStr);
-            
-            for (const [filePath, contentStr] of Object.entries(bundle)) {
-                const parts = filePath.split('/');
-                const fileName = parts.pop();
-                let currentDir = rootMap;
-                for (const part of parts) {
-                    if (!currentDir.has(part)) {
-                        currentDir.set(part, new Directory(new Map()));
-                    }
-                    currentDir = (currentDir.get(part) as Directory).contents;
-                }
-                currentDir.set(fileName!, new File(new TextEncoder().encode(contentStr as string)));
+      const payloadBytes = getCustomSection(buffer, "cdd-php-payload");
+      if (payloadBytes) {
+        const jsonStr = new TextDecoder().decode(payloadBytes);
+        const bundle = JSON.parse(jsonStr);
+
+        for (const [filePath, contentStr] of Object.entries(bundle)) {
+          const parts = filePath.split("/");
+          const fileName = parts.pop();
+          let currentDir = rootMap;
+          for (const part of parts) {
+            if (!currentDir.has(part)) {
+              currentDir.set(part, new Directory(new Map()));
             }
-        } else {
-            console.warn("Could not find cdd-php-payload custom section");
+            currentDir = (currentDir.get(part) as Directory).contents;
+          }
+          currentDir.set(
+            fileName!,
+            new File(new TextEncoder().encode(contentStr as string)),
+          );
         }
+      } else {
+        console.warn("Could not find cdd-php-payload custom section");
+      }
     }
 
     const rootPreopen = new PreopenDirectory("/", rootMap);
 
-        const rootCommandArgs = options.target === "to_docs_json" 
-      ? ["to_docs_json"] 
-      : ["from_openapi", options.target];
+    console.log("CddWasmSdk target: " + options.target);
+    const rootCommandArgs =
+      options.target === "to_docs_json"
+        ? ["to_docs_json"]
+        : ["from_openapi", options.target];
 
     const args = [
       options.ecosystem,
@@ -274,27 +311,41 @@ let cddTsStdout = "";
       ...(options.ecosystem === "cdd-php" ? ["-q", "/bin/cdd-php"] : []),
       ...rootCommandArgs,
       "-i",
-      '/' + specFileName,
+      "/" + specFileName,
       "-o",
       "/out",
       ...(options.additionalArgs || []),
     ];
 
     console.log("ARGS PASSED:", args.slice(1));
-const env: string[] = options.ecosystem === "cdd-php" ? [
-      `INPUT=/${specFileName}`,
-      `OUTPUT_DIR=out`
-    ] : [
-      `CDD_COMMAND=${args.includes('from_openapi') ? 'from_openapi' : args[1]}`,
-      `CDD_ARGS=${args.slice(1).join(" ")}`,
-      `INPUT=/${specFileName}`,
-      `OUTPUT_DIR=out`
-    ];
+    const env: string[] =
+      options.ecosystem === "cdd-php"
+        ? [`INPUT=/${specFileName}`, `OUTPUT_DIR=out`]
+        : [
+            `CDD_COMMAND=${args.includes("from_openapi") ? "from_openapi" : args[1]}`,
+            `CDD_ARGS=${args.slice(1).join(" ")}`,
+            `INPUT=/${specFileName}`,
+            `OUTPUT_DIR=out`,
+          ];
 
     const fds = [
-      options.ecosystem === 'cdd-ts' ? new OpenFile(new File(new TextEncoder().encode(JSON.stringify({ args, input: typeof options.specContent === 'string' ? options.specContent : new TextDecoder().decode(options.specContent) })))) : new OpenFile(new File(new Uint8Array([]))),
+      options.ecosystem === "cdd-ts"
+        ? new OpenFile(
+            new File(
+              new TextEncoder().encode(
+                JSON.stringify({
+                  args,
+                  input:
+                    typeof options.specContent === "string"
+                      ? options.specContent
+                      : new TextDecoder().decode(options.specContent),
+                }),
+              ),
+            ),
+          )
+        : new OpenFile(new File(new Uint8Array([]))),
       ConsoleStdout.lineBuffered((msg: string) => {
-        if (options.ecosystem === 'cdd-ts') {
+        if (options.ecosystem === "cdd-ts") {
           cddTsStdout = (cddTsStdout || "") + msg + "\n";
         }
         if (options.printStdout) console.log(`[${options.ecosystem}] ${msg}`);
@@ -310,10 +361,13 @@ const env: string[] = options.ecosystem === "cdd-php" ? [
 
     const wasi = new WASI(args, env, fds);
 
-    if (options.ecosystem === "cdd-python" || options.ecosystem === "cdd-python-all") {
+    if (
+      options.ecosystem === "cdd-python" ||
+      options.ecosystem === "cdd-python-all"
+    ) {
       // @ts-ignore
       const { loadPyodide } =
-// @ts-ignore
+        // @ts-ignore
         await import("https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.mjs");
       const pyodide = await loadPyodide({
         indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.0/full/",
@@ -321,15 +375,15 @@ const env: string[] = options.ecosystem === "cdd-php" ? [
       await pyodide.loadPackage("micropip");
       const micropip = pyodide.pyimport("micropip");
       await micropip.install(["pydantic<2.0", "libcst", "urllib3"]); // and python-cdd... wait python-cdd isn't on pure pure pypi? Or it is, but it might need to be pure python. Let's assume python-cdd is pure python.
-      
 
       // unpack zip
-      const arrayBuf = options.wasmBinary instanceof Uint8Array
-        ? options.wasmBinary.buffer.slice(
-            options.wasmBinary.byteOffset,
-            options.wasmBinary.byteOffset + options.wasmBinary.byteLength
-          )
-        : options.wasmBinary;
+      const arrayBuf =
+        options.wasmBinary instanceof Uint8Array
+          ? options.wasmBinary.buffer.slice(
+              options.wasmBinary.byteOffset,
+              options.wasmBinary.byteOffset + options.wasmBinary.byteLength,
+            )
+          : options.wasmBinary;
       pyodide.unpackArchive(arrayBuf, "zip", {
         extractDir: "/cdd_src",
       });
@@ -408,12 +462,11 @@ const env: string[] = options.ecosystem === "cdd-php" ? [
       return results;
     }
 
-        const module = await WebAssembly.compile(buffer as ArrayBuffer);
+    const module = await WebAssembly.compile(buffer as ArrayBuffer);
 
     let isGraalVM = false;
     let exitCode = 0;
-    
-    
+
     const wasmImports: any = {
       wasi_snapshot_preview1: wasi.wasiImport,
       env: {},
@@ -423,7 +476,9 @@ const env: string[] = options.ecosystem === "cdd-php" ? [
         "performance.now": () => performance.now(),
         "stderrWriter.flush": () => {},
         "stdoutWriter.flush": () => {},
-        "runtime.setExitCode": (code: number) => { exitCode = code; },
+        "runtime.setExitCode": (code: number) => {
+          exitCode = code;
+        },
         llog: () => {},
         formatStackTrace: () => {},
         getCurrentWorkingDirectory: () => 0,
@@ -438,7 +493,7 @@ const env: string[] = options.ecosystem === "cdd-php" ? [
         f64log10: Math.log10,
         f64pow: Math.pow,
       },
-            jsbody: {
+      jsbody: {
         "_JSObject.stringValue___String": () => null,
         "_JSNumber.javaDouble___Double": () => 0,
         "_JSConversion.extractJavaScriptProxy___Object_Object": () => null,
@@ -457,25 +512,39 @@ const env: string[] = options.ecosystem === "cdd-php" ? [
       },
       convert: {
         proxyCharArray: () => {},
-      }
+      },
     };
 
     const instance = await WebAssembly.instantiate(module, wasmImports);
 
     try {
-      if ((instance as any).exports.from_openapi) { wasi.initialize(instance as any); try { exitCode = (instance as any).exports.from_openapi(); } catch(e: any) { if(e&&e.name==="WASIProcExit") exitCode=e.code; else throw e; } } else if ((instance as any).exports._start) {
+      if ((instance as any).exports.from_openapi) {
+        wasi.initialize(instance as any);
+        try {
+          exitCode = (instance as any).exports.from_openapi();
+        } catch (e: any) {
+          if (e && e.name === "WASIProcExit") exitCode = e.code;
+          else throw e;
+        }
+      } else if ((instance as any).exports._start) {
         exitCode = wasi.start(instance as any);
       } else if ((instance as any).exports.main) {
-        isGraalVM = true; throw new Error("GraalVM Execution currently not supported in this runtime.");
+        isGraalVM = true;
+        throw new Error(
+          "GraalVM Execution currently not supported in this runtime.",
+        );
       } else {
         throw new Error("WASM binary missing _start export");
       }
     } catch (e: any) {
-      if (options.ecosystem === 'cdd-ts' && e.message && e.message.includes('unreachable')) {
+      if (
+        options.ecosystem === "cdd-ts" &&
+        e.message &&
+        e.message.includes("unreachable")
+      ) {
         exitCode = 0;
         console.warn("Ignored Javy unreachable trap for cdd-ts");
-      } else 
-      if (e && e.name === "WASIProcExit") {
+      } else if (e && e.name === "WASIProcExit") {
         exitCode = e.code;
       } else if (e && typeof e.code === "number") {
         exitCode = e.code;
@@ -512,19 +581,22 @@ const env: string[] = options.ecosystem === "cdd-php" ? [
     if (options.ecosystem === "cdd-ts" && cddTsStdout) {
       try {
         const lines = cddTsStdout.split("\n");
-        const jsonLine = lines.find((l: string) => l.startsWith("JAVY_FS_DUMP:")); console.log("JSONLINE:", !!jsonLine);
+        const jsonLine = lines.find((l: string) =>
+          l.startsWith("JAVY_FS_DUMP:"),
+        );
+        console.log("JSONLINE:", !!jsonLine);
         if (jsonLine) {
           const fsData = JSON.parse(jsonLine.substring("JAVY_FS_DUMP:".length));
           for (const [key, value] of Object.entries(fsData)) {
             let p = key;
             if (p.startsWith("/out/")) {
-                p = p.substring("/out/".length);
+              p = p.substring("/out/".length);
             } else if (p.startsWith("")) {
-                p = p.substring(("").length);
+              p = p.substring("".length);
             }
             results.push({
               path: p,
-              content: new TextEncoder().encode(value as string)
+              content: new TextEncoder().encode(value as string),
             });
           }
         }
