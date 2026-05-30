@@ -37,6 +37,20 @@ vi.mock("@bjorn3/browser_wasi_shim", () => {
   const PreopenDirectory = vi.fn().mockImplementation(() => ({}));
   const WASI = vi.fn().mockImplementation(() => makeFakeWasi());
   return { WASI, File, Directory, OpenFile, ConsoleStdout, PreopenDirectory };
+
+  // -------------------------------------------------------------------------
+  // to_docs_json argument construction
+  // -------------------------------------------------------------------------
+
+  it("constructs args correctly for to_docs_json target", async () => {
+    const { WASI } = await import("@bjorn3/browser_wasi_shim");
+    (WASI as ReturnType<typeof vi.fn>).mockImplementationOnce(() =>
+      makeFakeWasi({ exitCode: 0 }),
+    );
+    const result = await CddWasmSdk.fromOpenApi(baseOptions({ target: "to_docs_json" as any }));
+    expect(Array.isArray(result)).toBe(true);
+  });
+
 });
 
 // ---------------------------------------------------------------------------
@@ -258,13 +272,8 @@ describe("CddWasmSdk.fromOpenApi", () => {
       ),
     ).rejects.toThrow(); // any error — the CDN import fails in Node
   });
-});
 
-  // -------------------------------------------------------------------------
-  // to_docs_json argument construction
-  // -------------------------------------------------------------------------
-
-    it("constructs args correctly for to_docs_json target", async () => {
+  it("constructs args correctly for to_docs_json target", async () => {
     const { WASI } = await import("@bjorn3/browser_wasi_shim");
     (WASI as ReturnType<typeof vi.fn>).mockImplementationOnce(() =>
       makeFakeWasi({ exitCode: 0 }),
@@ -272,3 +281,6 @@ describe("CddWasmSdk.fromOpenApi", () => {
     const result = await CddWasmSdk.fromOpenApi(baseOptions({ target: "to_docs_json" as any }));
     expect(Array.isArray(result)).toBe(true);
   });
+});
+
+  
