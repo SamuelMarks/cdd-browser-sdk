@@ -136,7 +136,7 @@ export class CddWasmSdk {
     const isJson =
       typeof options.specContent === "string"
         ? options.specContent.trim().startsWith("{")
-        : new TextDecoder().decode(options.specContent).trim().startsWith("{");
+        : new TextDecoder().decode(options.specContent as Uint8Array).trim().startsWith("{");
     const specFileName = isJson ? "spec.json" : "spec.yaml";
 
     const buffer =
@@ -232,7 +232,7 @@ export class CddWasmSdk {
       const specContentStr =
         typeof options.specContent === "string"
           ? options.specContent
-          : new TextDecoder().decode(options.specContent);
+          : new TextDecoder().decode(options.specContent as Uint8Array);
       let res;
       try {
         if (options.target === "to_server") {
@@ -338,7 +338,7 @@ export class CddWasmSdk {
                   input:
                     typeof options.specContent === "string"
                       ? options.specContent
-                      : new TextDecoder().decode(options.specContent),
+                      : new TextDecoder().decode(options.specContent as Uint8Array),
                 }),
               ),
             ),
@@ -361,10 +361,7 @@ export class CddWasmSdk {
 
     const wasi = new WASI(args, env, fds);
 
-    if (
-      options.ecosystem === "cdd-python" ||
-      options.ecosystem === "cdd-python-all"
-    ) {
+    if (options.ecosystem === "cdd-python" || options.ecosystem === "cdd-python-all") {
       // @ts-ignore
       const { loadPyodide } =
         // @ts-ignore
@@ -379,9 +376,9 @@ export class CddWasmSdk {
       // unpack zip
       const arrayBuf =
         options.wasmBinary instanceof Uint8Array
-          ? options.wasmBinary.buffer.slice(
-              options.wasmBinary.byteOffset,
-              options.wasmBinary.byteOffset + options.wasmBinary.byteLength,
+          ? (options.wasmBinary as Uint8Array).buffer.slice(
+              (options.wasmBinary as Uint8Array).byteOffset,
+              (options.wasmBinary as Uint8Array).byteOffset + (options.wasmBinary as Uint8Array).byteLength,
             )
           : options.wasmBinary;
       pyodide.unpackArchive(arrayBuf, "zip", {
@@ -393,7 +390,7 @@ export class CddWasmSdk {
         const specContentStr =
           typeof options.specContent === "string"
             ? options.specContent
-            : new TextDecoder().decode(options.specContent);
+            : new TextDecoder().decode(options.specContent as Uint8Array);
         pyodide.FS.writeFile(`/${specFileName}`, specContentStr);
       }
       pyodide.FS.mkdir("/out");
@@ -469,7 +466,9 @@ export class CddWasmSdk {
 
     const wasmImports: any = {
       wasi_snapshot_preview1: wasi.wasiImport,
-      env: {},
+      webcil: {},
+      "dotnet_browser": {},
+      env: { abort: () => { console.error("abort called"); } },
       interop: {
         genBacktrace: () => {},
         "Date.now": () => Date.now(),
