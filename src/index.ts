@@ -7,6 +7,8 @@ import {
   PreopenDirectory,
   Inode,
 } from "@bjorn3/browser_wasi_shim";
+// @ts-ignore
+import { CddJavaBrowser as StaticCddJavaBrowser } from "cdd-java-cli";
 
 /**
  * Supported ecosystems for CDD code generation.
@@ -179,17 +181,10 @@ export class CddWasmSdk {
           (globalThis as any).GraalVM = null;
         }
 
-        // @ts-ignore
-        const mod = await import("cdd-java-cli");
-        CddJavaBrowser =
-          mod.CddJavaBrowser ||
-          mod.default?.CddJavaBrowser ||
-          Object.values(mod)[0];
+        // Use statically imported CddJavaBrowser to prevent bare specifier issues
+        CddJavaBrowser = StaticCddJavaBrowser;
         if (!CddJavaBrowser) {
-          throw new Error(
-            "Could not find CddJavaBrowser in imported cdd-java-cli module: " +
-              Object.keys(mod).join(","),
-          );
+          throw new Error("Could not find StaticCddJavaBrowser from cdd-java-cli");
         }
       } catch (e: any) {
         throw new Error(
@@ -376,9 +371,9 @@ export class CddWasmSdk {
       // @ts-ignore
       const { loadPyodide } =
         // @ts-ignore
-        await import("https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.mjs");
+        await import("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.mjs");
       const pyodide = await loadPyodide({
-        indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.0/full/",
+        indexURL: "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/",
       });
       await pyodide.loadPackage("micropip");
       const micropip = pyodide.pyimport("micropip");
