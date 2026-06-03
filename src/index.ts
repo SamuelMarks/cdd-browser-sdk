@@ -361,7 +361,18 @@ export class CddWasmSdk {
 
     const wasi = new WASI(args, env, fds);
 
-    if (options.ecosystem === "cdd-python" || options.ecosystem === "cdd-python-all") {
+    const buffer =
+      options.wasmBinary instanceof Uint8Array
+        ? options.wasmBinary.buffer.slice(
+            options.wasmBinary.byteOffset,
+            options.wasmBinary.byteOffset + options.wasmBinary.byteLength,
+          )
+        : (options.wasmBinary as ArrayBuffer);
+    
+    const view = new Uint8Array(buffer);
+    const isZip = view.length >= 4 && view[0] === 0x50 && view[1] === 0x4b && view[2] === 0x03 && view[3] === 0x04;
+
+    if ((options.ecosystem === "cdd-python" || options.ecosystem === "cdd-python-all") && isZip) {
       // @ts-ignore
       const { loadPyodide } =
         // @ts-ignore
@@ -374,14 +385,7 @@ export class CddWasmSdk {
       await micropip.install(["pydantic<2.0", "libcst", "urllib3"]); // and python-cdd... wait python-cdd isn't on pure pure pypi? Or it is, but it might need to be pure python. Let's assume python-cdd is pure python.
 
       // unpack zip
-      const arrayBuf =
-        options.wasmBinary instanceof Uint8Array
-          ? (options.wasmBinary as Uint8Array).buffer.slice(
-              (options.wasmBinary as Uint8Array).byteOffset,
-              (options.wasmBinary as Uint8Array).byteOffset + (options.wasmBinary as Uint8Array).byteLength,
-            )
-          : options.wasmBinary;
-      pyodide.unpackArchive(arrayBuf, "zip", {
+      pyodide.unpackArchive(buffer, "zip", {
         extractDir: "/cdd_src",
       });
 
@@ -459,7 +463,7 @@ export class CddWasmSdk {
       return results;
     }
 
-    const module = await WebAssembly.compile(buffer as ArrayBuffer);
+    const module = await WebAssembly.compile(buffer);
 
     let isGraalVM = false;
     let exitCode = 0;
