@@ -398,7 +398,7 @@ export class CddWasmSdk {
       sys.argv.clear();
 
       if (options.ecosystem === "cdd-python-all") {
-        sys.path.append("/cdd_src/src");
+        sys.path.append("/cdd_src");
         [
           "cdd-python-all",
           "from_openapi",
