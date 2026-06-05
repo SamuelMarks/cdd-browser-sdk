@@ -13,7 +13,6 @@
   "license": "MIT",
   "dependencies": {
     "@bjorn3/browser_wasi_shim": "^0.3.0",
-    "cdd-java-cli": "file:../../cdd-openapi-test-harness/cdd-java/package",
     "pyodide": "^0.29.3"
   },
   "devDependencies": {
