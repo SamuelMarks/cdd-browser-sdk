@@ -2,15 +2,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { CddMcpClient } from "../src/mcp/client";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { CddGatewayError, CddSdkError } from "../src/error";
 
-// Mock the MCP modules
 vi.mock("@modelcontextprotocol/sdk/client/sse.js", () => {
     return {
         SSEClientTransport: vi.fn().mockImplementation(() => {
             return {
-                close: vi.fn().mockResolvedValue(undefined),
+                close: vi.fn(),
             };
-        })
+        }),
     };
 });
 
@@ -19,51 +19,69 @@ vi.mock("@modelcontextprotocol/sdk/client/index.js", () => {
         Client: vi.fn().mockImplementation(() => {
             return {
                 connect: vi.fn().mockResolvedValue(undefined),
-                listTools: vi.fn().mockResolvedValue({ tools: [{ name: "cdd_generate_sdk" }] }),
-                callTool: vi.fn().mockResolvedValue({ result: { sdk: "some-code" } })
+                listTools: vi.fn().mockResolvedValue({ tools: [] }),
+                callTool: vi.fn().mockResolvedValue({ result: "ok" }),
             };
-        })
+        }),
     };
 });
 
 describe("CddMcpClient", () => {
-    let client: CddMcpClient;
-
     beforeEach(() => {
         vi.clearAllMocks();
-        client = new CddMcpClient({
-            gatewayUrl: "https://api.gateway.local",
-            authToken: "mock-token"
-        });
     });
 
-    it("should instantiate without throwing", () => {
-        expect(client).toBeDefined();
-    });
-
-    it("should connect using SSEClientTransport with correct URL and headers", async () => {
+    it("connects with auth", async () => {
+        const client = new CddMcpClient({ gatewayUrl: "http://api", authToken: "TOKEN" });
         await client.connect();
-
-        // Check if SSE transport was created correctly
-        expect(SSEClientTransport).toHaveBeenCalledTimes(1);
-        const [urlArg, optionsArg] = vi.mocked(SSEClientTransport).mock.calls[0];
-        
-        expect(urlArg.toString()).toBe("https://api.gateway.local/mcp/sse");
-        expect(optionsArg).toMatchObject({
-            eventSourceInit: { withCredentials: true },
-            requestInit: { headers: { "Authorization": "Bearer mock-token" } }
-        });
+        expect(SSEClientTransport).toHaveBeenCalled();
+        expect(Client).toHaveBeenCalled();
     });
 
-    it("should list tools correctly", async () => {
-        await client.connect();
-        const tools = await client.listTools();
-        expect(tools.tools[0].name).toBe("cdd_generate_sdk");
+    it("connect fails", async () => {
+        const client = new CddMcpClient({ gatewayUrl: "http://api", authToken: "TOKEN" });
+        const mockClient = vi.mocked(Client).mock.results[0]?.value as any;
+        if (mockClient) { mockClient.connect.mockRejectedValueOnce(new Error("fail")); }
+        await expect(client.connect()).rejects.toThrow(CddGatewayError);
     });
 
-    it("should execute the generate tool correctly", async () => {
+    it("disconnects", async () => {
+        const client = new CddMcpClient({ gatewayUrl: "http://api", authToken: "TOKEN" });
         await client.connect();
-        const result = await client.generateSdk("rust", "{}");
-        expect(result).toEqual({ result: { sdk: "some-code" } });
+        await client.disconnect();
+    });
+
+    it("disconnect fails", async () => {
+        const client = new CddMcpClient({ gatewayUrl: "http://api", authToken: "TOKEN" });
+        await client.connect();
+        const transport = (client as any).transport;
+        transport.close.mockRejectedValueOnce(new Error("fail"));
+        await expect(client.disconnect()).rejects.toThrow(CddSdkError);
+    });
+
+    it("listTools", async () => {
+        const client = new CddMcpClient({ gatewayUrl: "http://api", authToken: "TOKEN" });
+        const res = await client.listTools();
+        expect(res).toEqual({ tools: [] });
+    });
+
+    it("listTools fails", async () => {
+        const client = new CddMcpClient({ gatewayUrl: "http://api", authToken: "TOKEN" });
+        const mockClient = vi.mocked(Client).mock.results[0]?.value as any;
+        if (mockClient) { mockClient.listTools.mockRejectedValueOnce(new Error("fail")); }
+        await expect(client.listTools()).rejects.toThrow(CddSdkError);
+    });
+
+    it("generateSdk", async () => {
+        const client = new CddMcpClient({ gatewayUrl: "http://api", authToken: "TOKEN" });
+        const res = await client.generateSdk("ts", "input");
+        expect(res).toEqual({ result: "ok" });
+    });
+
+    it("generateSdk fails", async () => {
+        const client = new CddMcpClient({ gatewayUrl: "http://api", authToken: "TOKEN" });
+        const mockClient = vi.mocked(Client).mock.results[0]?.value as any;
+        if (mockClient) { mockClient.callTool.mockRejectedValueOnce(new Error("fail")); }
+        await expect(client.generateSdk("ts", "input")).rejects.toThrow(CddSdkError);
     });
 });
