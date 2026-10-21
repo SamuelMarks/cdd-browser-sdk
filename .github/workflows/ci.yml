@@ -25,5 +25,8 @@ jobs:
       - name: Run Build
         run: npm run build
 
+      - name: Check Documentation Coverage
+        run: npm run check:docs
+
       - name: Run Tests and Coverage
         run: npm run test:coverage

@@ -5,9 +5,16 @@ export default defineConfig({
     environment: "node",
     coverage: {
       provider: "v8",
+      all: true,
       include: ["src/**/*.ts"],
-      exclude: ["src/index.ts", "src/wasm.ts"],
+      exclude: [],
       reporter: ["text", "lcov"],
+      thresholds: {
+        lines: 100,
+        functions: 100,
+        branches: 100,
+        statements: 100,
+      },
     },
   },
 });

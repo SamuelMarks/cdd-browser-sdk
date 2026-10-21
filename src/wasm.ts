@@ -1,15 +1,19 @@
-/* v8 ignore start */
-/* v8 ignore start */
+/**
+ * @module wasm
+ * WebAssembly, WASI, GraalVM (WasmGC), and Pyodide execution engine for running
+ * `cdd-*` OpenAPI code generators in the browser.
+ */
+
 import {
-  WASI,
-  File,
-  Directory,
-  OpenFile,
   ConsoleStdout,
+  Directory,
+  File,
+  type Inode,
+  OpenFile,
   PreopenDirectory,
-  Inode,
+  WASI,
 } from "@bjorn3/browser_wasi_shim";
-// @ts-ignore
+import { CddEngineError, CddValidationError } from "./error.js";
 
 /**
  * Supported ecosystems for CDD code generation.
@@ -31,265 +35,1069 @@ export type Ecosystem =
   | "cdd-ts";
 
 /**
- * Supported generation targets, including standard SDK generation targets and docs generation ("to_docs_json").
+ * Supported generation targets, including standard SDK generation targets,
+ * server generation, ORM generation, MCP generation, and docs generation.
  */
-export type Target = "to_sdk" | "to_sdk_cli" | "to_server" | "to_docs_json" | "to_mcp";
+export type Target =
+  | "to_sdk"
+  | "to_sdk_cli"
+  | "to_server"
+  | "to_docs_json"
+  | "to_mcp"
+  | "to_orm";
+
+/**
+ * Map of `cdd-*` ecosystems to their browser WebAssembly readiness status.
+ */
+export const WASM_ECOSYSTEM_SUPPORT: Readonly<Record<Ecosystem, boolean>> = {
+  "cdd-c": true,
+  "cdd-cpp": false,
+  "cdd-csharp": true,
+  "cdd-go": true,
+  "cdd-java": true,
+  "cdd-kotlin": true,
+  "cdd-php": false,
+  "cdd-python": true,
+  "cdd-python-all": true,
+  "cdd-ruby": true,
+  "cdd-rust": false,
+  "cdd-sh": true,
+  "cdd-swift": true,
+  "cdd-ts": true,
+};
+
+/**
+ * Result returned by the `CddJavaBrowser` WasmGC wrapper.
+ */
+export interface CddJavaExecutionResult {
+  /**
+   * Map of relative file paths to their generated string contents.
+   */
+  files: Record<string, string>;
+}
+
+/**
+ * Instance interface for the `CddJavaBrowser` WasmGC engine.
+ */
+export interface CddJavaBrowserEngine {
+  /**
+   * Generates server code from an OpenAPI specification string.
+   * @param specContent OpenAPI specification string.
+   * @returns Promise resolving to generated files.
+   */
+  generateServer(specContent: string): Promise<CddJavaExecutionResult>;
+
+  /**
+   * Generates CLI SDK code from an OpenAPI specification string.
+   * @param specContent OpenAPI specification string.
+   * @param noGithubActions Whether to omit GitHub Actions workflows.
+   * @param noInstallablePackage Whether to omit installable package boilerplate.
+   * @param includeTests Whether to generate test suites.
+   * @returns Promise resolving to generated files.
+   */
+  generateSdkCli(
+    specContent: string,
+    noGithubActions: boolean,
+    noInstallablePackage: boolean,
+    includeTests: boolean,
+  ): Promise<CddJavaExecutionResult>;
+
+  /**
+   * Generates ORM / database model code from an OpenAPI specification string.
+   * @param specContent OpenAPI specification string.
+   * @returns Promise resolving to generated files.
+   */
+  generateOrm(specContent: string): Promise<CddJavaExecutionResult>;
+
+  /**
+   * Generates client SDK code from an OpenAPI specification string.
+   * @param specContent OpenAPI specification string.
+   * @param noGithubActions Whether to omit GitHub Actions workflows.
+   * @param noInstallablePackage Whether to omit installable package boilerplate.
+   * @param includeTests Whether to generate test suites.
+   * @returns Promise resolving to generated files.
+   */
+  generateSdk(
+    specContent: string,
+    noGithubActions: boolean,
+    noInstallablePackage: boolean,
+    includeTests: boolean,
+  ): Promise<CddJavaExecutionResult>;
+}
+
+/**
+ * Constructor signature for `CddJavaBrowser`.
+ */
+export interface CddJavaBrowserConstructor {
+  /**
+   * Creates a new `CddJavaBrowser` engine instance.
+   * @param wasmUrl URL to the `cdd-java.wasm` binary.
+   * @param jsUrl URL to the `cdd-java.js` loader script.
+   */
+  new (wasmUrl: string, jsUrl: string): CddJavaBrowserEngine;
+}
+
+/**
+ * Virtual filesystem stat result inside Pyodide.
+ */
+export interface PyodideStat {
+  /**
+   * POSIX file mode bitmask.
+   */
+  mode: number;
+}
+
+/**
+ * Emscripten virtual filesystem interface exposed by Pyodide.
+ */
+export interface PyodideFileSystem {
+  /**
+   * Writes data to a file in the Pyodide virtual filesystem.
+   * @param path Virtual filesystem path.
+   * @param data String or binary content to write.
+   */
+  writeFile(path: string, data: string | Uint8Array): void;
+
+  /**
+   * Creates a directory in the Pyodide virtual filesystem.
+   * @param path Directory path to create.
+   */
+  mkdir(path: string): void;
+
+  /**
+   * Lists directory entries at the given path.
+   * @param path Directory path to read.
+   * @returns Array of entry names.
+   */
+  readdir(path: string): string[];
+
+  /**
+   * Retrieves POSIX stat metadata for a path.
+   * @param path Path to inspect.
+   * @returns Stat metadata object.
+   */
+  stat(path: string): PyodideStat;
+
+  /**
+   * Checks whether a POSIX mode bitmask represents a directory.
+   * @param mode POSIX mode value from `stat()`.
+   * @returns `true` if directory, `false` otherwise.
+   */
+  isDir(mode: number): boolean;
+
+  /**
+   * Reads a file as a `Uint8Array` from the Pyodide virtual filesystem.
+   * @param path File path to read.
+   * @returns File bytes as a `Uint8Array`.
+   */
+  readFile(path: string): Uint8Array;
+}
+
+/**
+ * Minimal interface for `micropip` imported via `pyodide.pyimport("micropip")`.
+ */
+export interface PyodideMicropip {
+  /**
+   * Installs one or more Python packages via micropip.
+   * @param packages Package specification or array of package specifications.
+   * @returns Promise resolving when installation completes.
+   */
+  install(packages: string | string[]): Promise<void>;
+}
+
+/**
+ * Minimal interface for Python `sys.argv` or `sys.path` list proxies.
+ */
+export interface PyodideListProxy {
+  /**
+   * Clears all elements from the Python list.
+   */
+  clear(): void;
+
+  /**
+   * Appends a string item to the Python list.
+   * @param item String element to append.
+   */
+  append(item: string): void;
+}
+
+/**
+ * Minimal interface for Python `sys` module imported via `pyodide.pyimport("sys")`.
+ */
+export interface PyodideSysModule {
+  /**
+   * Python `sys.argv` list proxy.
+   */
+  argv: PyodideListProxy;
+
+  /**
+   * Python `sys.path` list proxy.
+   */
+  path: PyodideListProxy;
+}
+
+/**
+ * Runtime interface for a loaded Pyodide instance.
+ */
+export interface PyodideInstance {
+  /**
+   * Emscripten virtual filesystem attached to Pyodide.
+   */
+  FS: PyodideFileSystem;
+
+  /**
+   * Loads a built-in Pyodide package (e.g., `"micropip"`).
+   * @param names Package name or list of package names.
+   * @returns Promise resolving when loaded.
+   */
+  loadPackage(names: string | string[]): Promise<void>;
+
+  /**
+   * Imports a Python module into JavaScript.
+   * @param name Python module name (`"micropip"` or `"sys"`).
+   * @returns Imported module proxy.
+   */
+  pyimport(name: string): PyodideMicropip & PyodideSysModule;
+
+  /**
+   * Unpacks a binary archive into the Pyodide virtual filesystem.
+   * @param buffer Archive bytes (`ArrayBuffer` or `Uint8Array`).
+   * @param format Archive format (e.g., `"zip"`).
+   * @param options Optional extraction options including `extractDir`.
+   */
+  unpackArchive(
+    buffer: ArrayBuffer,
+    format: string,
+    options?: {
+      /**
+       * Target directory for extraction.
+       */
+      extractDir?: string;
+    },
+  ): void;
+
+  /**
+   * Executes a Python code snippet asynchronously.
+   * @param code Python source code to evaluate.
+   * @returns Promise resolving when execution completes.
+   */
+  runPythonAsync(code: string): Promise<unknown>;
+}
+
+/**
+ * Loader function type for initializing a Pyodide instance.
+ */
+export type PyodideLoader = (options?: {
+  /**
+   * Base URL or directory containing Pyodide runtime assets.
+   */
+  indexURL?: string;
+}) => Promise<PyodideInstance>;
+
+/**
+ * Module structure exported by the Pyodide ES module bundle.
+ */
+export interface PyodideModule {
+  /**
+   * Function that loads and initializes the Pyodide WebAssembly runtime.
+   */
+  loadPyodide: PyodideLoader;
+}
+
+/**
+ * Exports required by `wasi.initialize` for reactor modules.
+ */
+export interface WasiReactorExports {
+  /**
+   * WebAssembly linear memory exported by the instance.
+   */
+  memory: WebAssembly.Memory;
+
+  /**
+   * Optional WASI reactor `_initialize` entrypoint.
+   */
+  _initialize?: () => unknown;
+}
+
+/**
+ * WebAssembly instance wrapper compatible with `wasi.initialize`.
+ */
+export interface WasiReactorInstance {
+  /**
+   * Exported reactor members.
+   */
+  exports: WasiReactorExports;
+}
+
+/**
+ * Exports required by `wasi.start` for command modules.
+ */
+export interface WasiCommandExports {
+  /**
+   * WebAssembly linear memory exported by the instance.
+   */
+  memory: WebAssembly.Memory;
+
+  /**
+   * WASI command `_start` entrypoint.
+   */
+  _start: () => unknown;
+}
+
+/**
+ * WebAssembly instance wrapper compatible with `wasi.start`.
+ */
+export interface WasiCommandInstance {
+  /**
+   * Exported command members.
+   */
+  exports: WasiCommandExports;
+}
 
 /**
  * Options for generating code from an OpenAPI specification.
  */
 export interface GenerateOptions {
-  /** The target ecosystem for generation. */
+  /**
+   * The target ecosystem for generation.
+   */
   ecosystem: Ecosystem;
-  /** The type of generation (e.g., to_sdk, to_server). */
+
+  /**
+   * The type of generation (e.g., `to_sdk`, `to_server`, `to_docs_json`).
+   */
   target: Target;
-  /** The OpenAPI specification content as a string or Uint8Array. */
+
+  /**
+   * The OpenAPI specification content as a UTF-8 string or `Uint8Array`.
+   */
   specContent: string | Uint8Array;
-  /** The WebAssembly binary for the target ecosystem. */
+
+  /**
+   * The WebAssembly binary (or Python ZIP bundle) for the target ecosystem.
+   */
   wasmBinary: Uint8Array | ArrayBuffer;
-  /** Optional flag to enable printing WASM stdout to the console. */
+
+  /**
+   * Optional flag to enable printing WASM stdout to the console.
+   */
   printStdout?: boolean;
-  /** Optional additional arguments to pass to the WASM binary. */
+
+  /**
+   * Optional additional CLI arguments to pass to the generator binary.
+   */
   additionalArgs?: string[];
+
+  /**
+   * Optional override URL for `cdd-java.wasm` when using the `cdd-java` ecosystem.
+   */
+  cddJavaWasmUrl?: string;
+
+  /**
+   * Optional override URL for `cdd-java.js` when using the `cdd-java` ecosystem.
+   */
+  cddJavaJsUrl?: string;
+
+  /**
+   * Optional custom Pyodide loader function for `cdd-python` and `cdd-python-all`.
+   */
+  pyodideLoader?: PyodideLoader;
 }
 
 /**
  * A file generated by the CDD WASM SDK.
  */
 export interface GeneratedFile {
-  /** The relative path of the generated file. */
+  /**
+   * The relative path of the generated file within the output directory.
+   */
   path: string;
-  /** The file contents as a Uint8Array. */
+
+  /**
+   * The file contents as a `Uint8Array`.
+   */
   content: Uint8Array;
 }
 
 /**
- * The CDD WebAssembly SDK class for executing generators.
+ * Normalized OpenAPI specification representation used internally during execution.
  */
+export interface NormalizedSpec {
+  /**
+   * Raw UTF-8 encoded bytes of the specification.
+   */
+  bytes: Uint8Array;
 
-/* v8 ignore start */
-function getCustomSection(
-  buffer: ArrayBuffer | ArrayBufferLike,
+  /**
+   * Decoded UTF-8 string of the specification.
+   */
+  text: string;
+
+  /**
+   * Determined virtual filename (`"spec.json"` or `"spec.yaml"`).
+   */
+  fileName: "spec.json" | "spec.yaml";
+}
+
+/**
+ * Extended global scope declarations for browser/WebWorker GraalVM and `CddJavaBrowser` globals.
+ */
+interface GlobalJavaScope {
+  /**
+   * Global GraalVM runtime object injected by `cdd-java.js`.
+   */
+  GraalVM?: unknown;
+
+  /**
+   * Global `CddJavaBrowser` constructor exposed by `cdd-java-cli`.
+   */
+  CddJavaBrowser?: CddJavaBrowserConstructor | null;
+
+  /**
+   * Optional WebWorker `importScripts` function.
+   */
+  importScripts?: (...urls: string[]) => void;
+
+  /**
+   * Optional browser/WebWorker `location` object.
+   */
+  location?: {
+    /**
+     * Origin URL string.
+     */
+    origin: string;
+  };
+
+  /**
+   * Optional WebWorker `self` reference.
+   */
+  self?: {
+    /**
+     * Worker-scoped GraalVM runtime object.
+     */
+    GraalVM?: unknown;
+  };
+}
+
+/**
+ * Expected exports structure on a compiled CDD WebAssembly instance.
+ */
+interface CddWasmExports {
+  /**
+   * Reactor-style `from_openapi` entrypoint export.
+   */
+  from_openapi?: () => number | void;
+
+  /**
+   * Standard WASI command `_start` entrypoint export.
+   */
+  _start?: () => number | void;
+
+  /**
+   * GraalVM/native `main` entrypoint export.
+   */
+  main?: () => number | void;
+}
+
+/**
+ * Structure of a `WASIProcExit` or exit-code bearing exception.
+ */
+interface ExitCodeError {
+  /**
+   * Error name (e.g., `"WASIProcExit"`).
+   */
+  name?: string;
+
+  /**
+   * Numeric exit code raised by `proc_exit`.
+   */
+  code?: number;
+
+  /**
+   * Exception message string.
+   */
+  message?: string;
+}
+
+/**
+ * Normalizes a `Uint8Array` or `ArrayBuffer` into a standalone `ArrayBuffer` slice.
+ * Fixes sub-view offset issues when a `Uint8Array` is a slice of a larger buffer.
+ * @param binary Input `Uint8Array` or `ArrayBuffer`.
+ * @returns A tightly-bounded `ArrayBuffer` containing only the binary's bytes.
+ */
+export function toArrayBuffer(binary: Uint8Array | ArrayBuffer): ArrayBuffer {
+  if (binary instanceof Uint8Array) {
+    return binary.buffer.slice(
+      binary.byteOffset,
+      binary.byteOffset + binary.byteLength,
+    ) as ArrayBuffer;
+  }
+  return binary;
+}
+
+/**
+ * Normalizes an OpenAPI specification input (`string` or `Uint8Array`) into
+ * both UTF-8 bytes, text, and a detected filename (`"spec.json"` or `"spec.yaml"`).
+ * @param specContent Input OpenAPI specification content.
+ * @returns Normalized specification bytes, text, and filename.
+ */
+export function normalizeSpecContent(
+  specContent: string | Uint8Array,
+): NormalizedSpec {
+  const bytes =
+    typeof specContent === "string"
+      ? new TextEncoder().encode(specContent)
+      : new Uint8Array(specContent);
+  const text =
+    typeof specContent === "string"
+      ? specContent
+      : new TextDecoder().decode(bytes);
+  const isJson = text.trim().startsWith("{");
+  return {
+    bytes,
+    text,
+    fileName: isJson ? "spec.json" : "spec.yaml",
+  };
+}
+
+/**
+ * Checks whether an `ArrayBuffer` starts with the standard PKZIP magic header (`PK\x03\x04`).
+ * @param buffer Binary buffer to inspect.
+ * @returns `true` if the buffer begins with `0x50 0x4b 0x03 0x04`.
+ */
+export function isZipArchive(buffer: ArrayBufferLike): boolean {
+  const view = new Uint8Array(buffer);
+  return (
+    view.length >= 4 &&
+    view[0] === 0x50 &&
+    view[1] === 0x4b &&
+    view[2] === 0x03 &&
+    view[3] === 0x04
+  );
+}
+
+/**
+ * Extracts a named WebAssembly custom section (section ID `0`) from a WASM binary buffer.
+ * Safely bounds-checks LEB128 varints and section lengths against truncated buffers.
+ * @param buffer Raw WebAssembly binary buffer.
+ * @param sectionName Target custom section name (e.g., `"cdd-php-payload"`).
+ * @returns The custom section payload bytes as a `Uint8Array`, or `null` if not found or malformed.
+ */
+export function getCustomSection(
+  buffer: ArrayBufferLike,
   sectionName: string,
 ): Uint8Array | null {
   const view = new Uint8Array(buffer);
+  if (view.length < 8) {
+    return null;
+  }
   let offset = 8;
   while (offset < view.length) {
     const id = view[offset++];
     let size = 0;
     let shift = 0;
     while (true) {
-      const byte = view[offset++];
+      if (offset >= view.length) {
+        return null;
+      }
+      const byte = view[offset++]!;
       size |= (byte & 0x7f) << shift;
       shift += 7;
-      if ((byte & 0x80) === 0) break;
+      if ((byte & 0x80) === 0) {
+        break;
+      }
+    }
+    const sectionEnd = offset + size;
+    if (sectionEnd > view.length) {
+      return null;
     }
     if (id === 0) {
-      const startOffset = offset;
       let nameLen = 0;
       shift = 0;
       while (true) {
-        const byte = view[offset++];
+        if (offset >= sectionEnd) {
+          return null;
+        }
+        const byte = view[offset++]!;
         nameLen |= (byte & 0x7f) << shift;
         shift += 7;
-        if ((byte & 0x80) === 0) break;
+        if ((byte & 0x80) === 0) {
+          break;
+        }
+      }
+      if (offset + nameLen > sectionEnd) {
+        return null;
       }
       const name = new TextDecoder().decode(
         view.slice(offset, offset + nameLen),
       );
       offset += nameLen;
       if (name === sectionName) {
-        return view.slice(offset, startOffset + size);
+        return view.slice(offset, sectionEnd);
       }
-      offset = startOffset + size;
-    } else {
-      offset += size;
     }
+    offset = sectionEnd;
   }
   return null;
 }
 
-/* v8 ignore stop */
+/**
+ * Mounts a JSON-encoded virtual file bundle (extracted from a WASM custom section)
+ * into a WASI root directory map.
+ * @param rootMap Target root directory `Map<string, Inode>`.
+ * @param payloadBytes UTF-8 JSON bytes mapping relative file paths to string contents.
+ */
+export function mountCustomSectionBundle(
+  rootMap: Map<string, Inode>,
+  payloadBytes: Uint8Array,
+): void {
+  const jsonStr = new TextDecoder().decode(payloadBytes);
+  const bundle = JSON.parse(jsonStr) as Record<string, string>;
+
+  for (const [filePath, contentStr] of Object.entries(bundle)) {
+    const parts = filePath.split("/").filter((part) => part.length > 0);
+    const fileName = parts.pop();
+    if (!fileName) {
+      continue;
+    }
+    let currentDir = rootMap;
+    for (const part of parts) {
+      let existing = currentDir.get(part);
+      if (!(existing instanceof Directory)) {
+        existing = new Directory(new Map<string, Inode>());
+        currentDir.set(part, existing);
+      }
+      currentDir = (existing as Directory).contents;
+    }
+    currentDir.set(fileName, new File(new TextEncoder().encode(contentStr)));
+  }
+}
+
+/**
+ * Recursively collects generated files from an in-memory WASI `Directory`.
+ * @param dir The WASI `Directory` inode to traverse.
+ * @param basePath Relative path prefix accumulated during recursion.
+ * @returns Array of `GeneratedFile` entries.
+ */
+export function collectWasiOutputFiles(
+  dir: Directory,
+  basePath = "",
+): GeneratedFile[] {
+  const results: GeneratedFile[] = [];
+  if (!dir.contents) {
+    return results;
+  }
+  for (const [name, entry] of dir.contents.entries()) {
+    const fullPath = basePath ? `${basePath}/${name}` : name;
+    if (entry instanceof File) {
+      results.push({
+        path: fullPath,
+        content: entry.data,
+      });
+    } else if (entry instanceof Directory) {
+      results.push(...collectWasiOutputFiles(entry, fullPath));
+    }
+  }
+  return results;
+}
+
+/**
+ * Parses `JAVY_FS_DUMP:<json>` lines emitted to stdout by `cdd-ts` Javy builds.
+ * @param stdout Combined stdout/stderr string captured from `cdd-ts`.
+ * @returns Array of `GeneratedFile` objects extracted from the dump.
+ */
+export function parseJavyStdoutDump(stdout: string): GeneratedFile[] {
+  const results: GeneratedFile[] = [];
+  if (!stdout) {
+    return results;
+  }
+  try {
+    const lines = stdout.split(/\r?\n/);
+    const jsonLine = lines.find((line) => line.startsWith("JAVY_FS_DUMP:"));
+    if (jsonLine) {
+      const fsData = JSON.parse(
+        jsonLine.substring("JAVY_FS_DUMP:".length),
+      ) as Record<string, string>;
+      for (const [key, value] of Object.entries(fsData)) {
+        const normalizedPath = key.startsWith("/out/")
+          ? key.substring("/out/".length)
+          : key;
+        results.push({
+          path: normalizedPath,
+          content: new TextEncoder().encode(String(value)),
+        });
+      }
+    }
+  } catch (e: unknown) {
+    console.error("Failed to parse JAVY_FS_DUMP", e);
+  }
+  return results;
+}
+
+/**
+ * Default Pyodide loader that dynamically imports `pyodide` from the local package or CDN.
+ * @param options Optional configuration with `indexURL` and custom `importer`.
+ * @returns Promise resolving to a `PyodideInstance`.
+ */
+export async function defaultPyodideLoader(options?: {
+  /**
+   * Optional base URL for Pyodide assets.
+   */
+  indexURL?: string;
+  /**
+   * Optional module importer override for testing or custom bundling.
+   */
+  importer?: (url: string) => Promise<PyodideModule>;
+}): Promise<PyodideInstance> {
+  const cdnUrl = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.mjs";
+  const importFn =
+    options?.importer ??
+    ((url: string): Promise<PyodideModule> =>
+      import(url) as Promise<PyodideModule>);
+  const mod = await importFn(cdnUrl);
+  return mod.loadPyodide({
+    indexURL:
+      options?.indexURL ?? "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/",
+  });
+}
+
+/**
+ * Executes `cdd-java` code generation via the GraalVM WasmGC `CddJavaBrowser` wrapper.
+ * @param options Code generation options.
+ * @param specText Normalized UTF-8 OpenAPI specification string.
+ * @returns Promise resolving to an array of `GeneratedFile` items.
+ * @throws {CddEngineError} If `CddJavaBrowser` is unavailable or execution fails.
+ */
+export async function executeJavaEcosystem(
+  options: GenerateOptions,
+  specText: string,
+): Promise<GeneratedFile[]> {
+  const scope = globalThis as unknown as GlobalJavaScope;
+  let CddJavaBrowser: CddJavaBrowserConstructor | null = null;
+
+  try {
+    const origin =
+      typeof scope.location !== "undefined" ? scope.location.origin : "";
+
+    if (typeof scope.importScripts === "function") {
+      try {
+        scope.importScripts(`${origin}/assets/wasm/cdd-java.js`);
+        if (scope.self?.GraalVM) {
+          scope.GraalVM = scope.self.GraalVM;
+        }
+      } catch (e: unknown) {
+        console.warn("Failed to importScripts cdd-java.js", e);
+      }
+    }
+
+    if (!scope.GraalVM && typeof scope.self !== "undefined" && scope.self.GraalVM) {
+      scope.GraalVM = scope.self.GraalVM;
+    }
+
+    if (!scope.GraalVM) {
+      scope.GraalVM = null;
+    }
+
+    CddJavaBrowser = scope.CddJavaBrowser ?? null;
+    if (!CddJavaBrowser) {
+      throw new Error("Could not find StaticCddJavaBrowser from cdd-java-cli");
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new CddEngineError(
+      `cdd-java-cli is not installed or available for WasmGC execution. Error: ${msg}`,
+      undefined,
+      e,
+    );
+  }
+
+  let engine: CddJavaBrowserEngine;
+  try {
+    const origin =
+      typeof scope.location !== "undefined" ? scope.location.origin : "";
+    const wasmUrl =
+      options.cddJavaWasmUrl ?? `${origin}/assets/wasm/cdd-java.wasm`;
+    const jsUrl = options.cddJavaJsUrl ?? `${origin}/assets/wasm/cdd-java.js`;
+    engine = new CddJavaBrowser(wasmUrl, jsUrl);
+  } catch (e: unknown) {
+    throw new CddEngineError(
+      `Failed to instantiate CddJavaBrowser: ${String(e)}`,
+      undefined,
+      e,
+    );
+  }
+
+  const noGithubActions = Boolean(
+    options.additionalArgs?.includes("--no-github-actions"),
+  );
+  const noInstallablePackage = Boolean(
+    options.additionalArgs?.includes("--no-installable-package"),
+  );
+  const includeTests = Boolean(options.additionalArgs?.includes("--tests"));
+
+  let res: CddJavaExecutionResult;
+  if (options.target === "to_server") {
+    res = await engine.generateServer(specText);
+  } else if (options.target === "to_sdk_cli") {
+    res = await engine.generateSdkCli(
+      specText,
+      noGithubActions,
+      noInstallablePackage,
+      includeTests,
+    );
+  } else if (options.target === "to_orm") {
+    res = await engine.generateOrm(specText);
+  } else {
+    res = await engine.generateSdk(
+      specText,
+      noGithubActions,
+      noInstallablePackage,
+      includeTests,
+    );
+  }
+
+  const results: GeneratedFile[] = [];
+  for (const [filePath, content] of Object.entries(res.files)) {
+    results.push({
+      path: filePath,
+      content: new TextEncoder().encode(content),
+    });
+  }
+  return results;
+}
+
+/**
+ * Executes `cdd-python` or `cdd-python-all` code generation inside Pyodide when
+ * provided a Python ZIP archive payload.
+ * @param options Code generation options.
+ * @param slicedBuffer Normalized `ArrayBuffer` containing the ZIP archive.
+ * @param spec Normalized OpenAPI specification.
+ * @returns Promise resolving to an array of `GeneratedFile` items.
+ */
+export async function executePythonZipEcosystem(
+  options: GenerateOptions,
+  slicedBuffer: ArrayBuffer,
+  spec: NormalizedSpec,
+): Promise<GeneratedFile[]> {
+  const loader = options.pyodideLoader ?? defaultPyodideLoader;
+  const pyodide = await loader({
+    indexURL: "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/",
+  });
+  await pyodide.loadPackage("micropip");
+  const micropip = pyodide.pyimport("micropip");
+  await micropip.install(["pydantic<2.0", "libcst", "urllib3"]);
+
+  pyodide.unpackArchive(slicedBuffer, "zip", {
+    extractDir: "/cdd_src",
+  });
+
+  if (spec.text.length > 0) {
+    pyodide.FS.writeFile(`/${spec.fileName}`, spec.text);
+  }
+  pyodide.FS.mkdir("/out");
+
+  const sys = pyodide.pyimport("sys");
+  sys.argv.clear();
+  sys.path.append("/cdd_src");
+
+  if (options.ecosystem === "cdd-python-all") {
+    const pyArgs = [
+      "cdd-python-all",
+      "from_openapi",
+      options.target,
+      "-i",
+      `/${spec.fileName}`,
+      "-o",
+      "/out",
+      ...(options.additionalArgs ?? []),
+    ];
+    for (const arg of pyArgs) {
+      sys.argv.append(arg);
+    }
+
+    await pyodide.runPythonAsync(`
+import openapi_client.cli
+try:
+    openapi_client.cli.main()
+except SystemExit as e:
+    if e.code != 0:
+        raise Exception(f"Failed with exit code {e.code}")
+`);
+  } else {
+    const pyArgs = ["cdd", ...(options.additionalArgs ?? [])];
+    for (const arg of pyArgs) {
+      sys.argv.append(arg);
+    }
+
+    await pyodide.runPythonAsync(`
+import cdd.__main__
+try:
+    cdd.__main__.main()
+except SystemExit as e:
+    if e.code != 0:
+        raise Exception(f"Failed with exit code {e.code}")
+`);
+  }
+
+  const results: GeneratedFile[] = [];
+
+  /**
+   * Recursively reads generated files from the Pyodide `/out` directory.
+   * @param dirPath Current virtual directory path in Pyodide FS.
+   * @param basePath Relative path prefix accumulated so far.
+   */
+  function readPyDir(dirPath: string, basePath: string): void {
+    const names = pyodide.FS.readdir(dirPath).filter(
+      (n) => n !== "." && n !== "..",
+    );
+    for (const name of names) {
+      const fullPath = `${dirPath}/${name}`;
+      const stat = pyodide.FS.stat(fullPath);
+      const relPath = basePath ? `${basePath}/${name}` : name;
+      if (pyodide.FS.isDir(stat.mode)) {
+        readPyDir(fullPath, relPath);
+      } else {
+        results.push({
+          path: relPath,
+          content: pyodide.FS.readFile(fullPath),
+        });
+      }
+    }
+  }
+
+  readPyDir("/out", "");
+  return results;
+}
+
+/**
+ * Builds the WebAssembly import object required for WASI, TeaVM/Kotlin, .NET/WebCIL,
+ * and C/C++/Rust/Go/Ruby/PHP/Swift guest binaries.
+ * @param wasiImport The `wasi_snapshot_preview1` host import record from `@bjorn3/browser_wasi_shim`.
+ * @param setExitCode Callback invoked when guest interop sets an explicit exit code.
+ * @returns WebAssembly `Imports` object ready for `WebAssembly.instantiate`.
+ */
+export function createWasmImports(
+  wasiImport: Record<string, unknown>,
+  setExitCode: (code: number) => void,
+): WebAssembly.Imports {
+  return {
+    wasi_snapshot_preview1: wasiImport as WebAssembly.ModuleImports,
+    webcil: {},
+    dotnet_browser: {},
+    env: {
+      abort: (): void => {
+        console.error("abort called");
+      },
+    },
+    interop: {
+      genBacktrace: (): void => {},
+      "Date.now": (): number => Date.now(),
+      "performance.now": (): number => performance.now(),
+      "stderrWriter.flush": (): void => {},
+      "stdoutWriter.flush": (): void => {},
+      "runtime.setExitCode": (code: number): void => {
+        setExitCode(code);
+      },
+      llog: (): void => {},
+      formatStackTrace: (): void => {},
+      getCurrentWorkingDirectory: (): number => 0,
+      "stdoutWriter.close": (): void => {},
+      "stderrWriter.close": (): void => {},
+      "stdoutWriter.printChars": (): void => {},
+      "stderrWriter.printChars": (): void => {},
+    },
+    compat: {
+      f64rem: (x: number, y: number): number => x % y,
+      f64log: Math.log,
+      f64log10: Math.log10,
+      f64pow: Math.pow,
+    },
+    jsbody: {
+      "_JSObject.stringValue___String": (): null => null,
+      "_JSNumber.javaDouble___Double": (): number => 0,
+      "_JSConversion.extractJavaScriptProxy___Object_Object": (): null => null,
+      "_JSConversion.javaScriptUndefined___Object": (): null => null,
+      "_JSConversion.asJavaObjectOrString___Object_Object": (): null => null,
+      "_JSConversion.extractJavaScriptString___String_Object": (): null => null,
+      "_JSConversion.javaScriptToJava___Object_Object": (): null => null,
+      "_JSConversion.unproxy___Object_Object": (): null => null,
+      "_JSSymbol.referenceEquals___JSSymbol_JSSymbol_JSBoolean": (): number =>
+        0,
+      "_JSString.javaString___String": (): null => null,
+      "_JSSymbol.javaString___String": (): null => null,
+      "_JSObject.typeofString___JSString": (): null => null,
+      "_JSObject.get___Object_Object": (): null => null,
+      "_JSBoolean.javaBoolean___Boolean": (): number => 0,
+      "_JSBigInt.javaString___String": (): null => null,
+    },
+    convert: {
+      proxyCharArray: (): void => {},
+    },
+  };
+}
+
+/**
+ * The CDD WebAssembly SDK class for executing `cdd-*` generators in-browser.
+ */
 export class CddWasmSdk {
   /**
-   * Generates code from an OpenAPI specification using the provided WASM binary.
-   * @param options The generation options, including ecosystem, spec content, and WASM binary.
-   * @returns A promise that resolves to an array of generated files.
-   * @throws An error if the WASM binary is invalid or execution fails.
+   * Placeholder for direct GraalVM binary execution when WasmGC wrapper is not used.
+   * @param _buffer The WebAssembly binary buffer.
+   * @param _args Command-line arguments.
+   * @param _stdoutStream Standard output stream handler.
+   * @param _wasiImport WASI host imports object.
+   * @returns Never resolves; always throws `CddEngineError`.
+   * @throws {CddEngineError} Always thrown because GraalVM requires `CddJavaBrowser`.
    */
   static async runGraalVM(
-    buffer: Uint8Array | ArrayBuffer,
-    args: string[],
-    stdoutStream: any,
-    wasiImport: any,
+    _buffer: Uint8Array | ArrayBuffer,
+    _args: string[],
+    _stdoutStream: unknown,
+    _wasiImport: Record<string, unknown>,
   ): Promise<number> {
-    throw new Error(
+    throw new CddEngineError(
       "GraalVM execution not fully supported yet in this environment",
     );
   }
 
+  /**
+   * Generates code from an OpenAPI specification using the provided WASM binary.
+   * @param options The generation options, including ecosystem, target, spec content, and WASM binary.
+   * @returns A promise that resolves to an array of generated files.
+   * @throws {CddValidationError} If `options` contains invalid or missing required fields.
+   * @throws {CddEngineError} If the WASM binary is invalid or guest execution fails.
+   */
   static async fromOpenApi(options: GenerateOptions): Promise<GeneratedFile[]> {
-    let cddTsStdout = "";
-    const specData =
-      typeof options.specContent === "string"
-        ? new TextEncoder().encode(options.specContent)
-        : new Uint8Array(options.specContent);
+    if (!options || !options.ecosystem || !options.target) {
+      throw new CddValidationError("ecosystem and target are required");
+    }
 
-    const specFile = new File(specData);
+    const spec = normalizeSpecContent(options.specContent);
+    const slicedBuffer = toArrayBuffer(options.wasmBinary);
+
+    if (options.ecosystem === "cdd-java") {
+      return executeJavaEcosystem(options, spec.text);
+    }
+
+    if (
+      (options.ecosystem === "cdd-python" ||
+        options.ecosystem === "cdd-python-all") &&
+      isZipArchive(slicedBuffer)
+    ) {
+      return executePythonZipEcosystem(options, slicedBuffer, spec);
+    }
+
+    const specFile = new File(spec.bytes);
     const outDir = new Directory(new Map<string, Inode>());
-
-    const isJson =
-      typeof options.specContent === "string"
-        ? options.specContent.trim().startsWith("{")
-        : new TextDecoder().decode(options.specContent as Uint8Array).trim().startsWith("{");
-    const specFileName = isJson ? "spec.json" : "spec.yaml";
-
-    const buffer =
-      options.wasmBinary instanceof Uint8Array
-        ? options.wasmBinary.buffer
-        : options.wasmBinary;
-
     const rootMap = new Map<string, Inode>([
-      [specFileName, specFile],
+      [spec.fileName, specFile],
       ["out", outDir],
     ]);
 
-    if (options.ecosystem === "cdd-java") {
-      let CddJavaBrowser;
-      try {
-        // @ts-ignore
-        if (typeof importScripts === "function") {
-          try {
-            // @ts-ignore
-            importScripts(location.origin + "/assets/wasm/cdd-java.js");
-            if ((self as any).GraalVM) {
-              (globalThis as any).GraalVM = (self as any).GraalVM;
-            }
-          } catch (e) {
-            console.warn("Failed to importScripts cdd-java.js", e);
-          }
-        }
-
-        // Wait, if it's running in a WebWorker, 'window' is not defined. We need to check 'self'.
-        if (
-          !(globalThis as any).GraalVM &&
-          typeof self !== "undefined" &&
-          (self as any).GraalVM
-        ) {
-          (globalThis as any).GraalVM = (self as any).GraalVM;
-        }
-
-        // If it's still missing, provide a mock GraalVM that throws a clearer error inside the wrapper
-        if (!(globalThis as any).GraalVM) {
-          (globalThis as any).GraalVM = null;
-        }
-
-        // Use statically imported CddJavaBrowser to prevent bare specifier issues
-        CddJavaBrowser = (globalThis as any).CddJavaBrowser || null;
-        if (!CddJavaBrowser) {
-          throw new Error("Could not find StaticCddJavaBrowser from cdd-java-cli");
-        }
-      } catch (e: any) {
-        throw new Error(
-          "cdd-java-cli is not installed or available for WasmGC execution. Error: " +
-            (e.message || String(e)),
-        );
-      }
-
-      // Also apply a mock to globalThis for the tests so it avoids ReferenceError if it uses globalThis.GraalVM before we inject it
-      if (typeof globalThis !== "undefined" && !(globalThis as any).GraalVM) {
-        (globalThis as any).GraalVM = null;
-      }
-
-      let engine;
-      try {
-        const wasmUrl =
-          (options as any).cddJavaWasmUrl ||
-          (typeof location !== "undefined" ? location.origin : "") +
-            "/assets/wasm/cdd-java.wasm";
-        const jsUrl =
-          (options as any).cddJavaJsUrl ||
-          (typeof location !== "undefined" ? location.origin : " ") +
-            "/assets/wasm/cdd-java.js";
-        engine = new CddJavaBrowser(wasmUrl, jsUrl);
-      } catch (e) {
-        throw new Error("Failed to instantiate CddJavaBrowser: " + e);
-      }
-
-      // HACK: manually inject GraalVM to bypass wrapper check if it somehow loaded but wrapper failed
-      if (typeof self !== "undefined" && (self as any).GraalVM) {
-        (globalThis as any).GraalVM = (self as any).GraalVM;
-      }
-
-      // Restore standard console logs inside GraalVM intercept block because Playwright swallows it otherwise during failure
-      const originalLog = console.log;
-      console.log = (...args) => {
-        originalLog("[GraalVM Log]", ...args);
-      };
-
-      const specContentStr =
-        typeof options.specContent === "string"
-          ? options.specContent
-          : new TextDecoder().decode(options.specContent as Uint8Array);
-      let res;
-      try {
-        if (options.target === "to_server") {
-          res = await engine.generateServer(specContentStr);
-        } else if (options.target === "to_sdk_cli") {
-          res = await engine.generateSdkCli(
-            specContentStr,
-            !!options.additionalArgs?.includes("--no-github-actions"),
-            !!options.additionalArgs?.includes("--no-installable-package"),
-            !!options.additionalArgs?.includes("--tests"),
-          );
-        } else {
-          // @ts-ignore
-          if (options.target === "to_orm") {
-            res = await engine.generateOrm(specContentStr);
-          } else {
-            res = await engine.generateSdk(
-              specContentStr,
-              !!options.additionalArgs?.includes("--no-github-actions"),
-              !!options.additionalArgs?.includes("--no-installable-package"),
-              !!options.additionalArgs?.includes("--tests"),
-            );
-          }
-        }
-      } finally {
-        console.log = originalLog;
-      }
-
-      const results: GeneratedFile[] = [];
-      for (const [path, content] of Object.entries(res.files)) {
-        results.push({
-          path: path,
-          content: new TextEncoder().encode(content as string),
-        });
-      }
-      return results;
-    }
-
     if (options.ecosystem === "cdd-php") {
-      const payloadBytes = getCustomSection(buffer, "cdd-php-payload");
+      const payloadBytes = getCustomSection(slicedBuffer, "cdd-php-payload");
       if (payloadBytes) {
-        const jsonStr = new TextDecoder().decode(payloadBytes);
-        const bundle = JSON.parse(jsonStr);
-
-        for (const [filePath, contentStr] of Object.entries(bundle)) {
-          const parts = filePath.split("/");
-          const fileName = parts.pop();
-          let currentDir = rootMap;
-          for (const part of parts) {
-            if (!currentDir.has(part)) {
-              currentDir.set(part, new Directory(new Map()));
-            }
-            currentDir = (currentDir.get(part) as Directory).contents;
-          }
-          currentDir.set(
-            fileName!,
-            new File(new TextEncoder().encode(contentStr as string)),
-          );
-        }
+        mountCustomSectionBundle(rootMap, payloadBytes);
       } else {
         console.warn("Could not find cdd-php-payload custom section");
       }
@@ -297,7 +1105,6 @@ export class CddWasmSdk {
 
     const rootPreopen = new PreopenDirectory("/", rootMap);
 
-    console.log("CddWasmSdk target: " + options.target);
     const rootCommandArgs =
       options.target === "to_docs_json"
         ? ["to_docs_json"]
@@ -309,305 +1116,118 @@ export class CddWasmSdk {
       ...(options.ecosystem === "cdd-php" ? ["-q", "/bin/cdd-php"] : []),
       ...rootCommandArgs,
       "-i",
-      "/" + specFileName,
+      `/${spec.fileName}`,
       "-o",
       "/out",
-      ...(options.additionalArgs || []),
+      ...(options.additionalArgs ?? []),
     ];
 
-    console.log("ARGS PASSED:", args.slice(1));
     const env: string[] =
       options.ecosystem === "cdd-php"
-        ? [`INPUT=/${specFileName}`, `OUTPUT_DIR=out`]
+        ? [`INPUT=/${spec.fileName}`, `OUTPUT_DIR=out`]
         : [
-            `CDD_COMMAND=${args.includes("from_openapi") ? "from_openapi" : args[1]}`,
+            `CDD_COMMAND=${args.includes("from_openapi") ? "from_openapi" : args[1]!}`,
             `CDD_ARGS=${args.slice(1).join(" ")}`,
-            `INPUT=/${specFileName}`,
+            `INPUT=/${spec.fileName}`,
             `OUTPUT_DIR=out`,
           ];
 
-    const fds = [
+    let cddTsStdout = "";
+
+    const stdinFile =
       options.ecosystem === "cdd-ts"
         ? new OpenFile(
             new File(
               new TextEncoder().encode(
                 JSON.stringify({
                   args,
-                  input:
-                    typeof options.specContent === "string"
-                      ? options.specContent
-                      : new TextDecoder().decode(options.specContent as Uint8Array),
+                  input: spec.text,
                 }),
               ),
             ),
           )
-        : new OpenFile(new File(new Uint8Array([]))),
-      ConsoleStdout.lineBuffered((msg: string) => {
-        if (options.ecosystem === "cdd-ts") {
-          cddTsStdout = (cddTsStdout || "") + msg + "\n";
-        }
-        if (options.printStdout) console.log(`[${options.ecosystem}] ${msg}`);
-      }),
-      ConsoleStdout.lineBuffered((msg: string) => {
-        if (options.ecosystem === "cdd-ts") {
-          cddTsStdout = (cddTsStdout || "") + msg + "\n";
-        }
-        console.error(`[${options.ecosystem}] ${msg}`);
-      }),
-      rootPreopen,
-    ];
+        : new OpenFile(new File(new Uint8Array([])));
 
+    const stdoutFd = ConsoleStdout.lineBuffered((msg: string): void => {
+      if (options.ecosystem === "cdd-ts") {
+        cddTsStdout += `${msg}
+`;
+      }
+      if (options.printStdout) {
+        console.log(`[${options.ecosystem}] ${msg}`);
+      }
+    });
+
+    const stderrFd = ConsoleStdout.lineBuffered((msg: string): void => {
+      if (options.ecosystem === "cdd-ts") {
+        cddTsStdout += `${msg}
+`;
+      }
+      console.error(`[${options.ecosystem}] ${msg}`);
+    });
+
+    const fds = [stdinFile, stdoutFd, stderrFd, rootPreopen];
     const wasi = new WASI(args, env, fds);
 
-    const slicedBuffer =
-      options.wasmBinary instanceof Uint8Array
-        ? options.wasmBinary.buffer.slice(
-            options.wasmBinary.byteOffset,
-            options.wasmBinary.byteOffset + options.wasmBinary.byteLength,
-          )
-        : (options.wasmBinary as ArrayBuffer);
-    
-    const view = new Uint8Array(slicedBuffer);
-    const isZip = view.length >= 4 && view[0] === 0x50 && view[1] === 0x4b && view[2] === 0x03 && view[3] === 0x04;
-
-    if ((options.ecosystem === "cdd-python" || options.ecosystem === "cdd-python-all") && isZip) {
-      // @ts-ignore
-      const { loadPyodide } =
-        // @ts-ignore
-        await import("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.mjs");
-      const pyodide = await loadPyodide({
-        indexURL: "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/",
-      });
-      await pyodide.loadPackage("micropip");
-      const micropip = pyodide.pyimport("micropip");
-      await micropip.install(["pydantic<2.0", "libcst", "urllib3"]); // and python-cdd... wait python-cdd isn't on pure pure pypi? Or it is, but it might need to be pure python. Let's assume python-cdd is pure python.
-
-      // unpack zip
-      pyodide.unpackArchive(slicedBuffer, "zip", {
-        extractDir: "/cdd_src",
-      });
-
-      // mount spec.json if provided
-      if (options.specContent) {
-        const specContentStr =
-          typeof options.specContent === "string"
-            ? options.specContent
-            : new TextDecoder().decode(options.specContent as Uint8Array);
-        pyodide.FS.writeFile(`/${specFileName}`, specContentStr);
-      }
-      pyodide.FS.mkdir("/out");
-
-      const sys = pyodide.pyimport("sys");
-      sys.argv.clear();
-
-      if (options.ecosystem === "cdd-python-all") {
-        sys.path.append("/cdd_src");
-        [
-          "cdd-python-all",
-          "from_openapi",
-          options.target,
-          "-i",
-          `/${specFileName}`,
-          "-o",
-          "/out",
-        ]
-          .concat(options.additionalArgs || [])
-          .forEach((a) => sys.argv.append(a));
-
-        await pyodide.runPythonAsync(`
-                  import openapi_client.cli
-                  try:
-                      openapi_client.cli.main()
-                  except SystemExit as e:
-                      if e.code != 0:
-                          raise Exception(f"Failed with exit code {e.code}")
-              `);
-      } else {
-        sys.path.append("/cdd_src");
-        ["cdd"]
-          .concat(options.additionalArgs || [])
-          .forEach((a) => sys.argv.append(a));
-
-        await pyodide.runPythonAsync(`
-                  import cdd.__main__
-                  try:
-                      cdd.__main__.main()
-                  except SystemExit as e:
-                      if e.code != 0:
-                          raise Exception(f"Failed with exit code {e.code}")
-              `);
-      }
-
-      const results: GeneratedFile[] = [];
-      function readPyDir(dirPath: string, basePath: string) {
-        const names = pyodide.FS.readdir(dirPath).filter(
-          (n: string) => n !== "." && n !== "..",
-        );
-        for (const name of names) {
-          const fullPath = dirPath + "/" + name;
-          const stat = pyodide.FS.stat(fullPath);
-          const relPath = basePath ? `${basePath}/${name}` : name;
-          if (pyodide.FS.isDir(stat.mode)) {
-            readPyDir(fullPath, relPath);
-          } else {
-            results.push({
-              path: relPath,
-              content: pyodide.FS.readFile(fullPath),
-            });
-          }
-        }
-      }
-      readPyDir("/out", "");
-      return results;
-    }
-
-    const module = await WebAssembly.compile(slicedBuffer as ArrayBuffer);
-
-    let isGraalVM = false;
+    const module = await WebAssembly.compile(slicedBuffer);
     let exitCode = 0;
 
-    const wasmImports: any = {
-      wasi_snapshot_preview1: wasi.wasiImport,
-      webcil: {},
-      "dotnet_browser": {},
-      env: { abort: () => { console.error("abort called"); } },
-      interop: {
-        genBacktrace: () => {},
-        "Date.now": () => Date.now(),
-        "performance.now": () => performance.now(),
-        "stderrWriter.flush": () => {},
-        "stdoutWriter.flush": () => {},
-        "runtime.setExitCode": (code: number) => {
-          exitCode = code;
-        },
-        llog: () => {},
-        formatStackTrace: () => {},
-        getCurrentWorkingDirectory: () => 0,
-        "stdoutWriter.close": () => {},
-        "stderrWriter.close": () => {},
-        "stdoutWriter.printChars": () => {},
-        "stderrWriter.printChars": () => {},
+    const wasmImports = createWasmImports(
+      wasi.wasiImport as Record<string, unknown>,
+      (code: number): void => {
+        exitCode = code;
       },
-      compat: {
-        f64rem: (x: number, y: number) => x % y,
-        f64log: Math.log,
-        f64log10: Math.log10,
-        f64pow: Math.pow,
-      },
-      jsbody: {
-        "_JSObject.stringValue___String": () => null,
-        "_JSNumber.javaDouble___Double": () => 0,
-        "_JSConversion.extractJavaScriptProxy___Object_Object": () => null,
-        "_JSConversion.javaScriptUndefined___Object": () => null,
-        "_JSConversion.asJavaObjectOrString___Object_Object": () => null,
-        "_JSConversion.extractJavaScriptString___String_Object": () => null,
-        "_JSConversion.javaScriptToJava___Object_Object": () => null,
-        "_JSConversion.unproxy___Object_Object": () => null,
-        "_JSSymbol.referenceEquals___JSSymbol_JSSymbol_JSBoolean": () => 0,
-        "_JSString.javaString___String": () => null,
-        "_JSSymbol.javaString___String": () => null,
-        "_JSObject.typeofString___JSString": () => null,
-        "_JSObject.get___Object_Object": () => null,
-        "_JSBoolean.javaBoolean___Boolean": () => 0,
-        "_JSBigInt.javaString___String": () => null,
-      },
-      convert: {
-        proxyCharArray: () => {},
-      },
-    };
+    );
 
     const instance = await WebAssembly.instantiate(module, wasmImports);
+    const exports = instance.exports as unknown as CddWasmExports;
 
     try {
-      if ((instance as any).exports.from_openapi) {
-        wasi.initialize(instance as any);
-        try {
-          exitCode = (instance as any).exports.from_openapi();
-        } catch (e: any) {
-          if (e && e.name === "WASIProcExit") exitCode = e.code;
-          else throw e;
+      if (exports.from_openapi) {
+        wasi.initialize(instance as unknown as WasiReactorInstance);
+        const ret = exports.from_openapi();
+        if (typeof ret === "number") {
+          exitCode = ret;
         }
-      } else if ((instance as any).exports._start) {
-        exitCode = wasi.start(instance as any);
-      } else if ((instance as any).exports.main) {
-        isGraalVM = true;
-        throw new Error(
+      } else if (exports._start) {
+        exitCode = wasi.start(instance as unknown as WasiCommandInstance);
+      } else if (exports.main) {
+        throw new CddEngineError(
           "GraalVM Execution currently not supported in this runtime.",
         );
       } else {
-        throw new Error("WASM binary missing _start export");
+        throw new CddEngineError("WASM binary missing _start export");
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
+      const errObj = e as ExitCodeError | null;
       if (
         options.ecosystem === "cdd-ts" &&
-        e.message &&
-        e.message.includes("unreachable")
+        errObj &&
+        typeof errObj.message === "string" &&
+        errObj.message.includes("unreachable")
       ) {
         exitCode = 0;
         console.warn("Ignored Javy unreachable trap for cdd-ts");
-      } else if (e && e.name === "WASIProcExit") {
-        exitCode = e.code;
-      } else if (e && typeof e.code === "number") {
-        exitCode = e.code;
+      } else if (errObj && typeof errObj.code === "number") {
+        exitCode = errObj.code;
       } else {
-        throw e; // Rethrow actual errors like TypeError
+        throw e;
       }
     }
 
     if (exitCode !== 0) {
-      throw new Error(`WASM execution failed with exit code ${exitCode}`);
+      throw new CddEngineError(
+        `WASM execution failed with exit code ${exitCode}`,
+        exitCode,
+      );
     }
 
-    const results: GeneratedFile[] = [];
+    const results = collectWasiOutputFiles(outDir);
 
-    function readDir(dir: Directory, basePath: string) {
-      if (!dir.contents) return;
-
-      for (const [name, entry] of dir.contents.entries()) {
-        const fullPath = basePath ? `${basePath}/${name}` : name;
-        if (entry instanceof File) {
-          results.push({
-            path: fullPath,
-            content: entry.data,
-          });
-        } else if (entry instanceof Directory) {
-          readDir(entry, fullPath);
-        }
-      }
-    }
-
-    readDir(outDir, "");
-
-    console.log("FINAL STDOUT LENGTH:", cddTsStdout.length);
-    if (options.ecosystem === "cdd-ts" && cddTsStdout) {
-      try {
-        const lines = cddTsStdout.split("\n");
-        const jsonLine = lines.find((l: string) =>
-          l.startsWith("JAVY_FS_DUMP:"),
-        );
-        console.log("JSONLINE:", !!jsonLine);
-        if (jsonLine) {
-          const fsData = JSON.parse(jsonLine.substring("JAVY_FS_DUMP:".length));
-          for (const [key, value] of Object.entries(fsData)) {
-            let p = key;
-            if (p.startsWith("/out/")) {
-              p = p.substring("/out/".length);
-            } else if (p.startsWith("")) {
-              p = p.substring("".length);
-            }
-            results.push({
-              path: p,
-              content: new TextEncoder().encode(value as string),
-            });
-          }
-        }
-      } catch (e) {
-        console.error("Failed to parse JAVY_FS_DUMP", e);
-      }
+    if (options.ecosystem === "cdd-ts" && cddTsStdout.length > 0) {
+      results.push(...parseJavyStdoutDump(cddTsStdout));
     }
 
     return results;
   }
 }
-/* v8 ignore stop */
-/* v8 ignore stop */

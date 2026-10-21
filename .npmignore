@@ -1,5 +1,13 @@
 src/
+tests/
+dist/tests/
+scripts/
+conformance/
 *.py
 test.ts
 test.js
 tsconfig.json
+vitest.config.ts
+coverage/
+coverage_output.txt
+TODO_PLAN.md

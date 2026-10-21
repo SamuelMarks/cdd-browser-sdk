@@ -15,10 +15,18 @@ repos:
         types: [ts]
         pass_filenames: false
 
+      - id: npm-check-docs
+        name: npm check:docs
+        description: Verify 100% documentation coverage.
+        entry: npm run check:docs
+        language: system
+        types: [ts]
+        pass_filenames: false
+
       - id: npm-test
         name: npm test
-        description: Run vitest.
-        entry: npm run test
+        description: Run vitest with 100% coverage thresholds.
+        entry: npm run test:coverage
         language: system
         types: [ts]
         pass_filenames: false
