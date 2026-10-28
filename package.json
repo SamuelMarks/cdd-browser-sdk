@@ -28,14 +28,14 @@
   "author": "Samuel Marks",
   "license": "Apache-2.0 OR MIT",
   "dependencies": {
-    "@bjorn3/browser_wasi_shim": "^0.3.0",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "pyodide": "^0.29.3",
-    "zod": "^4.4.3"
+    "@bjorn3/browser_wasi_shim": "^0.4",
+    "@modelcontextprotocol/sdk": "^1.32",
+    "pyodide": "^314.0",
+    "zod": "^4.6"
   },
   "devDependencies": {
-    "@vitest/coverage-v8": "^1.6.0",
-    "typescript": "^5.0.0",
-    "vitest": "^1.6.0"
+    "@vitest/coverage-v8": "^5.0",
+    "typescript": "^7.0",
+    "vitest": "^5.0"
   }
 }

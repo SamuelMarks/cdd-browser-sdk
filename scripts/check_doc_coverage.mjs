@@ -8,7 +8,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import ts from "typescript";
+import * as ts from "typescript/unstable/ast";
+import { API } from "typescript/unstable/sync";
 
 /**
  * Recursively collects all `.ts` files in a directory.
@@ -36,7 +37,7 @@ function collectTsFiles(dirPath) {
  * @returns Combined JSDoc comment string, or empty string if missing.
  */
 function getJsDocComment(node, sourceFile) {
-  const jsDocs = ts.getJSDocCommentsAndTags(node);
+  const jsDocs = node.jsDoc;
   if (!jsDocs || jsDocs.length === 0) {
     return "";
   }
@@ -61,12 +62,7 @@ function getDocumentedParamNames(node) {
       tag.name &&
       ts.isIdentifier(tag.name)
     ) {
-      const commentText =
-        typeof tag.comment === "string"
-          ? tag.comment.trim()
-          : Array.isArray(tag.comment)
-            ? tag.comment.map((c) => c.text).join("").trim()
-            : "";
+      const commentText = (ts.getTextOfJSDocComment(tag.comment) ?? "").trim();
       if (commentText.length > 0) {
         names.add(tag.name.text);
       }
@@ -78,6 +74,14 @@ function getDocumentedParamNames(node) {
 const srcDir = path.resolve(process.cwd(), "src");
 const files = collectTsFiles(srcDir);
 
+const api = new API({ cwd: process.cwd() });
+const snapshot = api.updateSnapshot({ openProject: "tsconfig.json" });
+const project = snapshot.getProjects()[0];
+if (!project) {
+  api.close();
+  throw new Error("Could not load TypeScript project from tsconfig.json");
+}
+
 let totalItems = 0;
 let documentedItems = 0;
 const missing = [];
@@ -86,12 +90,11 @@ const bannedDirectives = [];
 for (const filePath of files) {
   const relPath = path.relative(process.cwd(), filePath);
   const content = fs.readFileSync(filePath, "utf8");
-  const sourceFile = ts.createSourceFile(
-    filePath,
-    content,
-    ts.ScriptTarget.ES2022,
-    true,
-  );
+  const sourceFile = project.program.getSourceFile(filePath);
+  if (!sourceFile) {
+    api.close();
+    throw new Error(`Could not parse source file: ${relPath}`);
+  }
 
   // Check for banned directives in source files
   if (/\/\/\s*@ts-ignore|\/\*\s*@ts-ignore/.test(content)) {
@@ -133,7 +136,7 @@ for (const filePath of files) {
       ts.isTypeAliasDeclaration(node) ||
       ts.isEnumDeclaration(node)
     ) {
-      const kindName = ts.SyntaxKind[node.kind];
+      const kindName = ts.formatSyntaxKind(node.kind);
       const name = node.name ? node.name.text : "<anonymous>";
       totalItems++;
       if (getJsDocComment(node, sourceFile).length > 0) {
@@ -143,7 +146,7 @@ for (const filePath of files) {
       }
     } else if (
       ts.isPropertyDeclaration(node) ||
-      ts.isPropertySignature(node) ||
+      ts.isPropertySignatureDeclaration(node) ||
       ts.isEnumMember(node)
     ) {
       const name = node.name ? node.name.getText(sourceFile) : "<property>";
@@ -156,7 +159,7 @@ for (const filePath of files) {
     } else if (
       ts.isFunctionDeclaration(node) ||
       ts.isMethodDeclaration(node) ||
-      ts.isMethodSignature(node) ||
+      ts.isMethodSignatureDeclaration(node) ||
       ts.isConstructorDeclaration(node) ||
       ts.isGetAccessorDeclaration(node) ||
       ts.isSetAccessorDeclaration(node)
@@ -206,11 +209,13 @@ for (const filePath of files) {
       }
     }
 
-    ts.forEachChild(node, visit);
+    node.forEachChild(visit);
   }
 
-  ts.forEachChild(sourceFile, visit);
+  sourceFile.forEachChild(visit);
 }
+
+api.close();
 
 const pct =
   totalItems === 0 ? 100 : Math.floor((documentedItems / totalItems) * 100);

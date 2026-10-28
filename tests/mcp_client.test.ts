@@ -10,7 +10,7 @@ import {
 
 vi.mock("@modelcontextprotocol/sdk/client/sse.js", () => {
   return {
-    SSEClientTransport: vi.fn().mockImplementation(() => {
+    SSEClientTransport: vi.fn().mockImplementation(function () {
       return {
         close: vi.fn().mockResolvedValue(undefined),
       };
@@ -20,7 +20,7 @@ vi.mock("@modelcontextprotocol/sdk/client/sse.js", () => {
 
 vi.mock("@modelcontextprotocol/sdk/client/index.js", () => {
   return {
-    Client: vi.fn().mockImplementation(() => {
+    Client: vi.fn().mockImplementation(function () {
       return {
         connect: vi.fn().mockResolvedValue(undefined),
         listTools: vi.fn().mockResolvedValue({ tools: [] }),

@@ -81,16 +81,20 @@ vi.mock("@bjorn3/browser_wasi_shim", () => {
   }
   const MockPreopenDirectory = vi
     .fn()
-    .mockImplementation((path: string, contents: Map<string, Inode>) => ({
-      path,
-      contents,
-    }));
+    .mockImplementation(function (path: string, contents: Map<string, Inode>) {
+      return {
+        path,
+        contents,
+      };
+    });
   const MockConsoleStdout = {
     lineBuffered: vi.fn().mockImplementation((cb: (msg: string) => void) => ({
       writeLine: cb,
     })),
   };
-  const MockWASI = vi.fn().mockImplementation(() => makeFakeWasi());
+  const MockWASI = vi.fn().mockImplementation(function () {
+    return makeFakeWasi();
+  });
   return {
     WASI: MockWASI,
     File: MockFile,
@@ -502,7 +506,7 @@ info:
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    vi.mocked(WASI).mockImplementationOnce((_args, _env, fds) => {
+    vi.mocked(WASI).mockImplementationOnce(function (_args, _env, fds) {
       return makeFakeWasi({
         onStart: () => {
           const outFd = fds[1] as unknown as { writeLine: (m: string) => void };
@@ -518,7 +522,7 @@ info:
     expect(errSpy).toHaveBeenCalledWith("[cdd-rust] hello stderr");
 
     logSpy.mockClear();
-    vi.mocked(WASI).mockImplementationOnce((_args, _env, fds) => {
+    vi.mocked(WASI).mockImplementationOnce(function (_args, _env, fds) {
       return makeFakeWasi({
         onStart: () => {
           const outFd = fds[1] as unknown as { writeLine: (m: string) => void };
@@ -609,7 +613,7 @@ info:
   });
 
   it("collects generated files when WASM exits with code 0", async () => {
-    vi.mocked(WASI).mockImplementationOnce((_args, _env, fds) => {
+    vi.mocked(WASI).mockImplementationOnce(function (_args, _env, fds) {
       return makeFakeWasi({
         exitCode: 0,
         onStart: () => {
@@ -634,9 +638,9 @@ info:
   });
 
   it("throws CddEngineError with exitCode when WASM exits with non-zero code or sets exitCode via interop", async () => {
-    vi.mocked(WASI).mockImplementationOnce(
-      () => makeFakeWasi({ exitCode: 1 }) as unknown as WASI,
-    );
+    vi.mocked(WASI).mockImplementationOnce(function () {
+      return makeFakeWasi({ exitCode: 1 }) as unknown as WASI;
+    });
     await expect(CddWasmSdk.fromOpenApi(baseOptions())).rejects.toThrow(
       "Engine execution failed: WASM execution failed with exit code 1",
     );
@@ -670,9 +674,9 @@ info:
       name: "WASIProcExit",
       code: 0,
     });
-    vi.mocked(WASI).mockImplementationOnce(
-      () => makeFakeWasi({ throws: procExit0 }) as unknown as WASI,
-    );
+    vi.mocked(WASI).mockImplementationOnce(function () {
+      return makeFakeWasi({ throws: procExit0 }) as unknown as WASI;
+    });
     const res0 = await CddWasmSdk.fromOpenApi(baseOptions());
     expect(res0).toEqual([]);
 
@@ -680,25 +684,25 @@ info:
       name: "WASIProcExit",
       code: 2,
     });
-    vi.mocked(WASI).mockImplementationOnce(
-      () => makeFakeWasi({ throws: procExit2 }) as unknown as WASI,
-    );
+    vi.mocked(WASI).mockImplementationOnce(function () {
+      return makeFakeWasi({ throws: procExit2 }) as unknown as WASI;
+    });
     await expect(CddWasmSdk.fromOpenApi(baseOptions())).rejects.toThrow(
       "WASM execution failed with exit code 2",
     );
 
     const codeOnlyErr = { code: 3 };
-    vi.mocked(WASI).mockImplementationOnce(
-      () => makeFakeWasi({ throws: codeOnlyErr }) as unknown as WASI,
-    );
+    vi.mocked(WASI).mockImplementationOnce(function () {
+      return makeFakeWasi({ throws: codeOnlyErr }) as unknown as WASI;
+    });
     await expect(CddWasmSdk.fromOpenApi(baseOptions())).rejects.toThrow(
       "WASM execution failed with exit code 3",
     );
 
     const typeErr = new TypeError("unexpected internal error");
-    vi.mocked(WASI).mockImplementationOnce(
-      () => makeFakeWasi({ throws: typeErr }) as unknown as WASI,
-    );
+    vi.mocked(WASI).mockImplementationOnce(function () {
+      return makeFakeWasi({ throws: typeErr }) as unknown as WASI;
+    });
     await expect(CddWasmSdk.fromOpenApi(baseOptions())).rejects.toThrow(
       "unexpected internal error",
     );
@@ -768,7 +772,7 @@ info:
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    vi.mocked(WASI).mockImplementationOnce((_args, _env, fds) => {
+    vi.mocked(WASI).mockImplementationOnce(function (_args, _env, fds) {
       return makeFakeWasi({
         onStart: () => {
           const outFd = fds[1] as unknown as { writeLine: (m: string) => void };

@@ -11,6 +11,9 @@ npm run test:coverage > coverage_output.txt 2>&1 || true
 
 COVERAGE=$(cat coverage_output.txt | grep "All files" | awk -F'|' '{print $2}' | tr -d ' ')
 if [ -z "$COVERAGE" ]; then
+    COVERAGE=$(cat coverage_output.txt | grep "Statements" | sed -E 's/.*:[[:space:]]*([0-9.]+)%.*/\1/')
+fi
+if [ -z "$COVERAGE" ]; then
     COVERAGE="0"
 fi
 COVERAGE_ROUNDED=$(printf "%.0f" "$COVERAGE")
