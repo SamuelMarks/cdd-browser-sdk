@@ -21,7 +21,9 @@ import {
   isZipArchive,
   mountCustomSectionBundle,
   normalizeSpecContent,
+  extractTypeScriptSchemasToOpenApi,
   parseJavyStdoutDump,
+  patchRustSalsaAsyncDrops,
   toArrayBuffer,
 } from "../src/index.js";
 
@@ -380,6 +382,58 @@ log after`;
 
     const convert = imports["convert"] as Record<string, () => void>;
     convert["proxyCharArray"]!();
+  });
+
+
+  it("patchRustSalsaAsyncDrops patches matching Parse<T>::drop sequences and returns original buffer when none match", () => {
+    const clean = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]).buffer;
+    expect(patchRustSalsaAsyncDrops(clean)).toBe(clean);
+
+    const withPattern = new Uint8Array([
+      0x00,
+      0x20, 0x02, 0x45, 0x0d, 0x00, 0x41, 0xf4, 0xf5, 0xdd, 0x00,
+      0x2d, 0x00, 0x00, 0x41, 0x03, 0x47, 0x04, 0x40, 0x10,
+      0x20, 0x01, 0x45, 0x0d, 0x00, 0x41, 0xf4, 0xf5, 0xdd, 0x00,
+      0x2d, 0x00, 0x00, 0x41, 0x03, 0x47, 0x04, 0x40, 0x10,
+      0x99,
+    ]);
+    const patched = patchRustSalsaAsyncDrops(withPattern.buffer);
+    expect(patched).not.toBe(withPattern.buffer);
+    const patchedView = new Uint8Array(patched);
+    expect(Array.from(patchedView.slice(1, 4))).toEqual([0x41, 0x01, 0x01]);
+  });
+
+  it("extractTypeScriptSchemasToOpenApi parses interfaces with primitive, boolean, array, and required/optional fields", () => {
+    const tsCode = `
+export interface Pet {
+  id: number;
+  name?: string;
+  active: boolean;
+  tags?: string[];
+  aliases: Array<string>;
+}
+interface EmptyModel {}
+`;
+    const files = extractTypeScriptSchemasToOpenApi(tsCode);
+    expect(files).toHaveLength(1);
+    expect(files[0]?.path).toBe("openapi.json");
+    const parsed = JSON.parse(new TextDecoder().decode(files[0]!.content));
+    expect(parsed.openapi).toBe("3.2.0");
+    expect(parsed.components.schemas.Pet).toEqual({
+      type: "object",
+      properties: {
+        id: { type: "number" },
+        name: { type: "string" },
+        active: { type: "boolean" },
+        tags: { type: "array" },
+        aliases: { type: "array" },
+      },
+      required: ["id", "active", "aliases"],
+    });
+    expect(parsed.components.schemas.EmptyModel).toEqual({
+      type: "object",
+      properties: {},
+    });
   });
 
   it("CddWasmSdk.runGraalVM throws CddEngineError", async () => {
@@ -914,6 +968,9 @@ info:
       generateDocsJson: vi
         .fn()
         .mockResolvedValue({ files: { "docs.json": "{\"endpoints\":{}}" } }),
+      generateOpenApi: vi
+        .fn()
+        .mockResolvedValue({ files: { "openapi.json": "{\"openapi\":\"3.2.0\"}" } }),
     };
 
     const recordedUrls: Array<{ wasmUrl: string; jsUrl: string }> = [];
@@ -983,11 +1040,47 @@ info:
       true,
     );
 
+    const oaJavaFiles = await CddWasmSdk.fromOpenApi(
+      baseOptions({
+        ecosystem: "cdd-java",
+        target: "to_openapi",
+        specContent: "public class Pet {}",
+      }),
+    );
+    expect(oaJavaFiles[0]?.path).toBe("openapi.json");
+    expect(mockEngine.generateOpenApi).toHaveBeenCalledWith("public class Pet {}");
+
     delete globalRef["CddJavaBrowser"];
     delete globalRef["GraalVM"];
     delete globalRef["location"];
     delete globalRef["self"];
     warnSpy.mockRestore();
+  });
+
+
+  it("mounts /src/input.hpp for cdd-cpp to_openapi and extracts schemas for cdd-ts to_openapi when Javy returns empty output", async () => {
+    await CddWasmSdk.fromOpenApi(
+      baseOptions({
+        ecosystem: "cdd-cpp",
+        target: "to_openapi",
+        specContent: "struct Pet { int id; };",
+      }),
+    );
+    expect(WASI).toHaveBeenLastCalledWith(
+      ["cdd-cpp", "to_openapi", "-i", "/src", "-o", "/out/openapi.json"],
+      expect.any(Array),
+      expect.any(Array),
+    );
+
+    const tsOaFiles = await CddWasmSdk.fromOpenApi(
+      baseOptions({
+        ecosystem: "cdd-ts",
+        target: "to_openapi",
+        specContent: "export interface Pet { id: number; }",
+      }),
+    );
+    expect(tsOaFiles).toHaveLength(1);
+    expect(tsOaFiles[0]?.path).toBe("openapi.json");
   });
 
   it("executes cdd-python and cdd-python-all ZIP archives via PyodideLoader", async () => {
@@ -1002,7 +1095,7 @@ info:
         writeFile: vi.fn((p: string, data: string | Uint8Array) => {
           writtenFiles.set(p, data);
         }),
-        mkdir: vi.fn(),
+        mkdir: vi.fn().mockImplementationOnce(() => {}).mockImplementationOnce(() => { throw new Error("EEXIST"); }),
         readdir: vi.fn((dirPath: string) => {
           if (dirPath === "/out") {
             return [".", "..", "pkg", "README.md"];

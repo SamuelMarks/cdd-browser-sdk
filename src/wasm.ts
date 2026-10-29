@@ -137,6 +137,13 @@ export interface CddJavaBrowserEngine {
     noImports: boolean,
     noWrapping: boolean,
   ): Promise<CddJavaExecutionResult>;
+
+  /**
+   * Generates an OpenAPI specification from Java source code.
+   * @param specContent Java source code string.
+   * @returns Promise resolving to generated files.
+   */
+  generateOpenApi?(specContent: string): Promise<CddJavaExecutionResult>;
 }
 
 /**
@@ -749,6 +756,109 @@ export function parseJavyStdoutDump(stdout: string): GeneratedFile[] {
 }
 
 /**
+ * Patches `ra_ap_syntax` `Parse<T>::drop` calls in `cdd-rust` WASI binaries that were
+ * compiled without `--cfg no_salsa_async_drops` so dropping a syntax tree does not attempt
+ * to spawn an OS background thread on single-threaded `wasm32-wasip1`.
+ * @param buffer Raw WebAssembly binary buffer.
+ * @returns Patched `ArrayBuffer` (or the original buffer if no unpatched sites exist).
+ */
+export function patchRustSalsaAsyncDrops(buffer: ArrayBuffer): ArrayBuffer {
+  const view = new Uint8Array(buffer);
+  let copyBuffer: ArrayBuffer | null = null;
+  let copy: Uint8Array | null = null;
+  for (let i = 0; i <= view.length - 19; i++) {
+    if (
+      view[i] === 0x20 &&
+      view[i + 2] === 0x45 &&
+      view[i + 3] === 0x0d &&
+      view[i + 4] === 0x00 &&
+      view[i + 5] === 0x41 &&
+      view[i + 10] === 0x2d &&
+      view[i + 11] === 0x00 &&
+      view[i + 12] === 0x00 &&
+      view[i + 13] === 0x41 &&
+      view[i + 14] === 0x03 &&
+      view[i + 15] === 0x47 &&
+      view[i + 16] === 0x04 &&
+      view[i + 17] === 0x40 &&
+      view[i + 18] === 0x10
+    ) {
+      if (!copy) {
+        copyBuffer = buffer.slice(0);
+        copy = new Uint8Array(copyBuffer);
+      }
+      copy[i] = 0x41;
+      copy[i + 1] = 0x01;
+      copy[i + 2] = 0x01;
+    }
+  }
+  return copyBuffer ?? buffer;
+}
+
+/**
+ * Fallback OpenAPI 3.2.0 extractor for TypeScript model files (`export interface` / `export type`)
+ * when `cdd-ts` Javy WASM is invoked with `to_openapi` on a file without service classes.
+ * @param sourceText TypeScript source code string.
+ * @returns Array containing `openapi.json` as a `GeneratedFile`.
+ */
+export function extractTypeScriptSchemasToOpenApi(
+  sourceText: string,
+): GeneratedFile[] {
+  const schemas: Record<string, Record<string, unknown>> = {};
+  const interfaceRegex =
+    /(?:export\s+)?interface\s+([A-Za-z0-9_]+)\s*\{([\s\S]*?)\}/g;
+  let match: RegExpExecArray | null;
+  while ((match = interfaceRegex.exec(sourceText)) !== null) {
+    const name = match[1]!;
+    const body = match[2]!;
+    const properties: Record<string, Record<string, string>> = {};
+    const required: string[] = [];
+    const propRegex =
+      /([A-Za-z0-9_]+)(\?)?\s*:\s*([^;\n]+?)(?:;|\n|$)/g;
+    let propMatch: RegExpExecArray | null;
+    while ((propMatch = propRegex.exec(body)) !== null) {
+      const propName = propMatch[1]!;
+      const isOptional = Boolean(propMatch[2]);
+      const rawType = propMatch[3]!.trim();
+      let oaType = "string";
+      if (rawType.includes("number")) {
+        oaType = "number";
+      } else if (rawType.includes("boolean")) {
+        oaType = "boolean";
+      } else if (rawType.endsWith("[]") || rawType.startsWith("Array<")) {
+        oaType = "array";
+      }
+      properties[propName] = { type: oaType };
+      if (!isOptional) {
+        required.push(propName);
+      }
+    }
+    schemas[name] = {
+      type: "object",
+      properties,
+      ...(required.length > 0 ? { required } : {}),
+    };
+  }
+  const openApiDoc = {
+    openapi: "3.2.0",
+    info: {
+      title: "Extracted API",
+      version: "1.0.0",
+    },
+    paths: {},
+    components: {
+      schemas,
+    },
+  };
+  return [
+    {
+      path: "openapi.json",
+      content: new TextEncoder().encode(JSON.stringify(openApiDoc, null, 2)),
+    },
+  ];
+}
+
+/**
  * Default Pyodide loader that dynamically imports `pyodide` from the local package or CDN.
  * @param options Optional configuration with `indexURL` and custom `importer`.
  * @returns Promise resolving to a `PyodideInstance`.
@@ -865,6 +975,8 @@ export async function executeJavaEcosystem(
     res = await engine.generateOrm(specText);
   } else if (options.target === "to_docs_json" && engine.generateDocsJson) {
     res = await engine.generateDocsJson(specText, noImports, noWrapping);
+  } else if (options.target === "to_openapi" && engine.generateOpenApi) {
+    res = await engine.generateOpenApi(specText);
   } else {
     res = await engine.generateSdk(
       specText,
@@ -912,7 +1024,11 @@ export async function executePythonZipEcosystem(
   if (spec.text.length > 0) {
     pyodide.FS.writeFile(`/${spec.fileName}`, spec.text);
   }
-  pyodide.FS.mkdir("/out");
+  try {
+    pyodide.FS.mkdir("/out");
+  } catch {
+    // Ignore if /out already exists from a previous run on a warm Pyodide instance
+  }
 
   const sys = pyodide.pyimport("sys");
   sys.argv.clear();
@@ -946,6 +1062,12 @@ export async function executePythonZipEcosystem(
     }
 
     await pyodide.runPythonAsync(`
+import ast, os, shutil
+shutil.rmtree("/out", ignore_errors=True)
+os.makedirs("/out", exist_ok=True)
+for _alias in ("Bytes", "NameConstant", "Num", "Str", "Ellipsis", "Index", "ExtSlice"):
+    if not hasattr(ast, _alias):
+        setattr(ast, _alias, getattr(ast, "Constant", ast.AST) if _alias not in ("Index", "ExtSlice") else ast.AST)
 import openapi_client.cli
 try:
     openapi_client.cli.main()
@@ -1103,7 +1225,11 @@ export class CddWasmSdk {
     }
 
     const spec = normalizeSpecContent(options.specContent);
-    const slicedBuffer = toArrayBuffer(options.wasmBinary);
+    const rawBuffer = toArrayBuffer(options.wasmBinary);
+    const slicedBuffer =
+      options.ecosystem === "cdd-rust"
+        ? patchRustSalsaAsyncDrops(rawBuffer)
+        : rawBuffer;
 
     if (options.ecosystem === "cdd-java") {
       return executeJavaEcosystem(options, spec.text);
@@ -1123,6 +1249,13 @@ export class CddWasmSdk {
       [spec.fileName, specFile],
       ["out", outDir],
     ]);
+
+    if (options.ecosystem === "cdd-cpp" && options.target === "to_openapi") {
+      rootMap.set(
+        "src",
+        new Directory(new Map<string, Inode>([["input.hpp", new File(spec.bytes)]])),
+      );
+    }
 
     if (options.ecosystem === "cdd-php") {
       const payloadBytes = getCustomSection(slicedBuffer, "cdd-php-payload");
@@ -1149,13 +1282,18 @@ export class CddWasmSdk {
           ? "/out/openapi.json"
           : "/out";
 
+    const inputFlagValue =
+      options.ecosystem === "cdd-cpp" && options.target === "to_openapi"
+        ? "/src"
+        : `/${spec.fileName}`;
+
     const args = [
       options.ecosystem,
       ...(options.ecosystem === "cdd-ruby" ? ["/bin/cdd-ruby"] : []),
       ...(options.ecosystem === "cdd-php" ? ["-q", "/bin/cdd-php"] : []),
       ...rootCommandArgs,
       "-i",
-      `/${spec.fileName}`,
+      inputFlagValue,
       "-o",
       outputFlagValue,
       ...(options.additionalArgs ?? []),
@@ -1282,6 +1420,14 @@ export class CddWasmSdk {
 
     if (options.ecosystem === "cdd-ts" && cddTsStdout.length > 0) {
       results.push(...parseJavyStdoutDump(cddTsStdout));
+    }
+
+    if (
+      options.ecosystem === "cdd-ts" &&
+      options.target === "to_openapi" &&
+      results.length === 0
+    ) {
+      results.push(...extractTypeScriptSchemasToOpenApi(spec.text));
     }
 
     return results;
