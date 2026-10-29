@@ -555,13 +555,39 @@ info:
         "-i",
         "/spec.json",
         "-o",
-        "/out",
+        "/out/docs.json",
         "--verbose",
         "--dry-run",
       ],
       [
-        "CDD_COMMAND=/bin/cdd-ruby",
-        "CDD_ARGS=/bin/cdd-ruby to_docs_json -i /spec.json -o /out --verbose --dry-run",
+        "CDD_COMMAND=to_docs_json",
+        "CDD_ARGS=/bin/cdd-ruby to_docs_json -i /spec.json -o /out/docs.json --verbose --dry-run",
+        "INPUT=/spec.json",
+        "OUTPUT_DIR=out",
+      ],
+      expect.any(Array),
+    );
+
+    vi.mocked(WASI).mockClear();
+    await CddWasmSdk.fromOpenApi(
+      baseOptions({
+        ecosystem: "cdd-ruby",
+        target: "to_openapi",
+      }),
+    );
+    expect(WASI).toHaveBeenCalledWith(
+      [
+        "cdd-ruby",
+        "/bin/cdd-ruby",
+        "to_openapi",
+        "-i",
+        "/spec.json",
+        "-o",
+        "/out/openapi.json",
+      ],
+      [
+        "CDD_COMMAND=to_openapi",
+        "CDD_ARGS=/bin/cdd-ruby to_openapi -i /spec.json -o /out/openapi.json",
         "INPUT=/spec.json",
         "OUTPUT_DIR=out",
       ],
@@ -769,6 +795,7 @@ info:
   });
 
   it("handles cdd-ts Javy execution, unreachable trap recovery, and JAVY_FS_DUMP extraction", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -777,20 +804,36 @@ info:
         onStart: () => {
           const outFd = fds[1] as unknown as { writeLine: (m: string) => void };
           const errFd = fds[2] as unknown as { writeLine: (m: string) => void };
+          outFd.writeLine("stdout progress");
           outFd.writeLine(
             'JAVY_FS_DUMP:{"/out/src/index.ts":"export const sdk = true;"}',
           );
-          errFd.writeLine("stderr trace");
+          errFd.writeLine(
+            'JAVY_FS_DUMP:{"/out/src/index.ts":"export const sdk = true;"}',
+          );
+          errFd.writeLine("stderr info line");
+          errFd.writeLine("❌ Generation failed: bad spec");
           throw new Error("RuntimeError: unreachable");
         },
       }) as unknown as WASI;
     });
 
     const files = await CddWasmSdk.fromOpenApi(
-      baseOptions({ ecosystem: "cdd-ts" }),
+      baseOptions({ ecosystem: "cdd-ts", printStdout: true }),
     );
     expect(warnSpy).toHaveBeenCalledWith(
       "Ignored Javy unreachable trap for cdd-ts",
+    );
+    expect(logSpy).toHaveBeenCalledWith("[cdd-ts] stdout progress");
+    expect(logSpy).toHaveBeenCalledWith("[cdd-ts] stderr info line");
+    expect(logSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("JAVY_FS_DUMP:"),
+    );
+    expect(errSpy).toHaveBeenCalledWith(
+      "[cdd-ts] ❌ Generation failed: bad spec",
+    );
+    expect(errSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("JAVY_FS_DUMP:"),
     );
     expect(files).toHaveLength(1);
     expect(files[0]?.path).toBe("src/index.ts");
@@ -798,6 +841,21 @@ info:
       "export const sdk = true;",
     );
 
+    logSpy.mockClear();
+    vi.mocked(WASI).mockImplementationOnce(function (_args, _env, fds) {
+      return makeFakeWasi({
+        onStart: () => {
+          const errFd = fds[2] as unknown as { writeLine: (m: string) => void };
+          errFd.writeLine("quiet stderr info line");
+        },
+      }) as unknown as WASI;
+    });
+    await CddWasmSdk.fromOpenApi(
+      baseOptions({ ecosystem: "cdd-ts", printStdout: false }),
+    );
+    expect(logSpy).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
     warnSpy.mockRestore();
     errSpy.mockRestore();
   });
@@ -853,6 +911,9 @@ info:
       generateSdk: vi
         .fn()
         .mockResolvedValue({ files: { "Sdk.java": "class Sdk {}" } }),
+      generateDocsJson: vi
+        .fn()
+        .mockResolvedValue({ files: { "docs.json": "{\"endpoints\":{}}" } }),
     };
 
     const recordedUrls: Array<{ wasmUrl: string; jsUrl: string }> = [];
@@ -907,6 +968,20 @@ info:
       baseOptions({ ecosystem: "cdd-java", target: "to_sdk" }),
     );
     expect(sdkFiles[0]?.path).toBe("Sdk.java");
+
+    const docsFiles = await CddWasmSdk.fromOpenApi(
+      baseOptions({
+        ecosystem: "cdd-java",
+        target: "to_docs_json",
+        additionalArgs: ["--no-imports", "--no-wrapping"],
+      }),
+    );
+    expect(docsFiles[0]?.path).toBe("docs.json");
+    expect(mockEngine.generateDocsJson).toHaveBeenCalledWith(
+      '{"openapi":"3.0.0"}',
+      true,
+      true,
+    );
 
     delete globalRef["CddJavaBrowser"];
     delete globalRef["GraalVM"];
@@ -1037,6 +1112,40 @@ info:
       "/spec.json",
       "-o",
       "/out",
+    ]);
+
+    await CddWasmSdk.fromOpenApi(
+      baseOptions({
+        ecosystem: "cdd-python-all",
+        target: "to_docs_json",
+        wasmBinary: zipBytes,
+        pyodideLoader: customLoader,
+      }),
+    );
+    expect(argvItems).toEqual([
+      "cdd-python-all",
+      "to_docs_json",
+      "-i",
+      "/spec.json",
+      "-o",
+      "/out/docs.json",
+    ]);
+
+    await CddWasmSdk.fromOpenApi(
+      baseOptions({
+        ecosystem: "cdd-python-all",
+        target: "to_openapi",
+        wasmBinary: zipBytes,
+        pyodideLoader: customLoader,
+      }),
+    );
+    expect(argvItems).toEqual([
+      "cdd-python-all",
+      "to_openapi",
+      "-i",
+      "/spec.json",
+      "-o",
+      "/out/openapi.json",
     ]);
 
     await CddWasmSdk.fromOpenApi(

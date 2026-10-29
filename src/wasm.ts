@@ -43,6 +43,7 @@ export type Target =
   | "to_sdk_cli"
   | "to_server"
   | "to_docs_json"
+  | "to_openapi"
   | "to_mcp"
   | "to_orm";
 
@@ -122,6 +123,19 @@ export interface CddJavaBrowserEngine {
     noGithubActions: boolean,
     noInstallablePackage: boolean,
     includeTests: boolean,
+  ): Promise<CddJavaExecutionResult>;
+
+  /**
+   * Generates documentation JSON (`docs.json`) from an OpenAPI specification string.
+   * @param specContent OpenAPI specification string.
+   * @param noImports Whether to omit import statements in generated snippets.
+   * @param noWrapping Whether to omit wrapping boilerplate in generated snippets.
+   * @returns Promise resolving to generated files.
+   */
+  generateDocsJson?(
+    specContent: string,
+    noImports: boolean,
+    noWrapping: boolean,
   ): Promise<CddJavaExecutionResult>;
 }
 
@@ -753,7 +767,7 @@ export async function defaultPyodideLoader(options?: {
   const importFn =
     options?.importer ??
     ((url: string): Promise<PyodideModule> =>
-      import(url) as Promise<PyodideModule>);
+      import(/* @vite-ignore */ url) as Promise<PyodideModule>);
   const mod = await importFn(cdnUrl);
   return mod.loadPyodide({
     indexURL:
@@ -834,6 +848,8 @@ export async function executeJavaEcosystem(
     options.additionalArgs?.includes("--no-installable-package"),
   );
   const includeTests = Boolean(options.additionalArgs?.includes("--tests"));
+  const noImports = Boolean(options.additionalArgs?.includes("--no-imports"));
+  const noWrapping = Boolean(options.additionalArgs?.includes("--no-wrapping"));
 
   let res: CddJavaExecutionResult;
   if (options.target === "to_server") {
@@ -847,6 +863,8 @@ export async function executeJavaEcosystem(
     );
   } else if (options.target === "to_orm") {
     res = await engine.generateOrm(specText);
+  } else if (options.target === "to_docs_json" && engine.generateDocsJson) {
+    res = await engine.generateDocsJson(specText, noImports, noWrapping);
   } else {
     res = await engine.generateSdk(
       specText,
@@ -885,7 +903,7 @@ export async function executePythonZipEcosystem(
   });
   await pyodide.loadPackage("micropip");
   const micropip = pyodide.pyimport("micropip");
-  await micropip.install(["pydantic<2.0", "libcst", "urllib3"]);
+  await micropip.install(["pydantic>=2.0", "libcst", "urllib3", "python-cdd"]);
 
   pyodide.unpackArchive(slicedBuffer, "zip", {
     extractDir: "/cdd_src",
@@ -899,16 +917,28 @@ export async function executePythonZipEcosystem(
   const sys = pyodide.pyimport("sys");
   sys.argv.clear();
   sys.path.append("/cdd_src");
+  sys.path.append("/cdd_src/src");
 
   if (options.ecosystem === "cdd-python-all") {
+    const pySubcmd =
+      options.target === "to_docs_json"
+        ? ["to_docs_json"]
+        : options.target === "to_openapi"
+          ? ["to_openapi"]
+          : ["from_openapi", options.target];
+    const pyOutput =
+      options.target === "to_docs_json"
+        ? "/out/docs.json"
+        : options.target === "to_openapi"
+          ? "/out/openapi.json"
+          : "/out";
     const pyArgs = [
       "cdd-python-all",
-      "from_openapi",
-      options.target,
+      ...pySubcmd,
       "-i",
       `/${spec.fileName}`,
       "-o",
-      "/out",
+      pyOutput,
       ...(options.additionalArgs ?? []),
     ];
     for (const arg of pyArgs) {
@@ -1108,7 +1138,16 @@ export class CddWasmSdk {
     const rootCommandArgs =
       options.target === "to_docs_json"
         ? ["to_docs_json"]
-        : ["from_openapi", options.target];
+        : options.target === "to_openapi"
+          ? ["to_openapi"]
+          : ["from_openapi", options.target];
+
+    const outputFlagValue =
+      options.target === "to_docs_json"
+        ? "/out/docs.json"
+        : options.target === "to_openapi"
+          ? "/out/openapi.json"
+          : "/out";
 
     const args = [
       options.ecosystem,
@@ -1118,7 +1157,7 @@ export class CddWasmSdk {
       "-i",
       `/${spec.fileName}`,
       "-o",
-      "/out",
+      outputFlagValue,
       ...(options.additionalArgs ?? []),
     ];
 
@@ -1126,7 +1165,7 @@ export class CddWasmSdk {
       options.ecosystem === "cdd-php"
         ? [`INPUT=/${spec.fileName}`, `OUTPUT_DIR=out`]
         : [
-            `CDD_COMMAND=${args.includes("from_openapi") ? "from_openapi" : args[1]!}`,
+            `CDD_COMMAND=${args.includes("from_openapi") ? "from_openapi" : rootCommandArgs[0]!}`,
             `CDD_ARGS=${args.slice(1).join(" ")}`,
             `INPUT=/${spec.fileName}`,
             `OUTPUT_DIR=out`,
@@ -1152,6 +1191,9 @@ export class CddWasmSdk {
       if (options.ecosystem === "cdd-ts") {
         cddTsStdout += `${msg}
 `;
+        if (msg.startsWith("JAVY_FS_DUMP:")) {
+          return;
+        }
       }
       if (options.printStdout) {
         console.log(`[${options.ecosystem}] ${msg}`);
@@ -1162,6 +1204,20 @@ export class CddWasmSdk {
       if (options.ecosystem === "cdd-ts") {
         cddTsStdout += `${msg}
 `;
+        if (msg.startsWith("JAVY_FS_DUMP:")) {
+          return;
+        }
+        if (
+          msg.startsWith("❌") ||
+          msg.startsWith("runGeneration error:") ||
+          msg.startsWith("Failed to parse stdin:") ||
+          msg.startsWith("Error:")
+        ) {
+          console.error(`[${options.ecosystem}] ${msg}`);
+        } else if (options.printStdout) {
+          console.log(`[${options.ecosystem}] ${msg}`);
+        }
+        return;
       }
       console.error(`[${options.ecosystem}] ${msg}`);
     });
