@@ -11,17 +11,22 @@ import {
   CddValidationError,
   CddWasmSdk,
   type CddJavaBrowserEngine,
+  type Ecosystem,
   type GenerateOptions,
   type PyodideInstance,
+  type ToDocsJsonOptions,
   WASM_ECOSYSTEM_SUPPORT,
+  buildEffectiveAdditionalArgs,
   collectWasiOutputFiles,
   createWasmImports,
   defaultPyodideLoader,
+  extractJsonFromStdout,
+  extractTypeScriptSchemasToOpenApi,
   getCustomSection,
   isZipArchive,
   mountCustomSectionBundle,
+  normalizeDocsJsonFiles,
   normalizeSpecContent,
-  extractTypeScriptSchemasToOpenApi,
   parseJavyStdoutDump,
   patchRustSalsaAsyncDrops,
   toArrayBuffer,
@@ -203,6 +208,129 @@ describe("Utility functions in src/wasm.ts", () => {
     expect(yamlBytesSpec.fileName).toBe("spec.yaml");
   });
 
+  it("buildEffectiveAdditionalArgs merges typed flags without duplicating existing flags", () => {
+    expect(
+      buildEffectiveAdditionalArgs(
+        baseOptions({
+          noImports: true,
+          noWrapping: true,
+          framework: "  axios  ",
+        }),
+      ),
+    ).toEqual(["--no-imports", "--no-wrapping", "--framework", "axios"]);
+
+    expect(
+      buildEffectiveAdditionalArgs(
+        baseOptions({
+          additionalArgs: ["--no-imports", "--no-wrapping", "--framework", "fetch"],
+          noImports: true,
+          noWrapping: true,
+          framework: "axios",
+        }),
+      ),
+    ).toEqual(["--no-imports", "--no-wrapping", "--framework", "fetch"]);
+
+    expect(
+      buildEffectiveAdditionalArgs(
+        baseOptions({
+          framework: "   ",
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("extractJsonFromStdout extracts clean JSON objects/arrays and strips leading/trailing log lines", () => {
+    expect(extractJsonFromStdout("")).toBeNull();
+    expect(
+      extractJsonFromStdout(`JAVY_FS_DUMP:{}
+   
+`),
+    ).toBeNull();
+    expect(extractJsonFromStdout("42")).toBeNull();
+    expect(extractJsonFromStdout("plain log line without json")).toBeNull();
+
+    // Pure JSON object
+    expect(extractJsonFromStdout('  {"endpoints":[]}  ')).toBe('{"endpoints":[]}');
+
+    // Single-line JSON preceded by diagnostic logs and non-object JSON lines
+    const withLogs = `[WARN] starting generator
+{malformed_json}
+123
+[{"endpoint":"/pets"}]
+[INFO] done`;
+    expect(extractJsonFromStdout(withLogs)).toBe('[{"endpoint":"/pets"}]');
+
+    // Multi-line pretty-printed JSON surrounded by logs and bracket noise
+    const multiLine = `[WARN] Note [important]
+{
+  "endpoints": [
+    { "path": "/users" }
+  ]
+}
+[INFO] finished {ok}`;
+    const extracted = extractJsonFromStdout(multiLine);
+    expect(extracted).not.toBeNull();
+    expect(JSON.parse(extracted!)).toEqual({
+      endpoints: [{ path: "/users" }],
+    });
+
+    // Multi-line JSON array surrounded by logs
+    const multiLineArray = `Log header
+[
+  {
+    "id": 1
+  }
+]
+Log footer`;
+    const extractedArr = extractJsonFromStdout(multiLineArray);
+    expect(extractedArr).not.toBeNull();
+    expect(JSON.parse(extractedArr!)).toEqual([{ id: 1 }]);
+
+    // Unclosed or invalid JSON brackets
+    expect(extractJsonFromStdout("{ unclosed: [1, 2 } ]")).toBeNull();
+  });
+
+  it("normalizeDocsJsonFiles normalizes file paths and falls back to stdout JSON extraction", () => {
+    const content = new TextEncoder().encode('{"ok":true}');
+    expect(
+      normalizeDocsJsonFiles([{ path: "/work/out/docs.json", content }], ""),
+    ).toEqual([{ path: "docs.json", content }]);
+
+    expect(
+      normalizeDocsJsonFiles([{ path: "custom_output.json", content }], ""),
+    ).toEqual([{ path: "docs.json", content }]);
+
+    const readme = new TextEncoder().encode("# readme");
+    expect(
+      normalizeDocsJsonFiles(
+        [
+          { path: "sub/docs.json", content },
+          { path: "README.md", content: readme },
+        ],
+        "",
+      ),
+    ).toEqual([
+      { path: "docs.json", content },
+      { path: "README.md", content: readme },
+    ]);
+
+    // Fallback to stdout when files array is empty
+    const fromStdout = normalizeDocsJsonFiles(
+      [],
+      `debug log
+{"docs":true}
+`,
+    );
+    expect(fromStdout).toHaveLength(1);
+    expect(fromStdout[0]?.path).toBe("docs.json");
+    expect(new TextDecoder().decode(fromStdout[0]!.content)).toBe(
+      '{"docs":true}',
+    );
+
+    // Empty when both files and stdout have no JSON
+    expect(normalizeDocsJsonFiles([], "no json here")).toEqual([]);
+  });
+
   it("isZipArchive detects PKZIP magic bytes and rejects non-zip or short buffers", () => {
     expect(isZipArchive(new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x00]).buffer)).toBe(
       true,
@@ -306,24 +434,31 @@ describe("Utility functions in src/wasm.ts", () => {
     ]);
   });
 
-  it("parseJavyStdoutDump handles empty stdout, valid dump, non-/out/ paths, missing dump line, and invalid JSON", () => {
+  it("parseJavyStdoutDump handles empty stdout, valid dump, /work/out/, /out/, non-/out/ paths, and invalid JSON", () => {
     expect(parseJavyStdoutDump("")).toEqual([]);
     expect(
       parseJavyStdoutDump(`normal log line
 another line`),
     ).toEqual([]);
 
+    const dumpJson = JSON.stringify({
+      "/out/index.ts": "export const x = 1;",
+      "/work/out/docs.json": '{"ok":true}',
+      "README.md": "hello",
+    });
     const validDump = `log before
-JAVY_FS_DUMP:{"/out/index.ts":"export const x = 1;","README.md":"hello"}
+JAVY_FS_DUMP:${dumpJson}
 log after`;
     const parsed = parseJavyStdoutDump(validDump);
-    expect(parsed).toHaveLength(2);
+    expect(parsed).toHaveLength(3);
     expect(parsed[0]?.path).toBe("index.ts");
     expect(new TextDecoder().decode(parsed[0]!.content)).toBe(
       "export const x = 1;",
     );
-    expect(parsed[1]?.path).toBe("README.md");
-    expect(new TextDecoder().decode(parsed[1]!.content)).toBe("hello");
+    expect(parsed[1]?.path).toBe("docs.json");
+    expect(new TextDecoder().decode(parsed[1]!.content)).toBe('{"ok":true}');
+    expect(parsed[2]?.path).toBe("README.md");
+    expect(new TextDecoder().decode(parsed[2]!.content)).toBe("hello");
 
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     expect(parseJavyStdoutDump("JAVY_FS_DUMP:{bad-json")).toEqual([]);
@@ -383,7 +518,6 @@ log after`;
     const convert = imports["convert"] as Record<string, () => void>;
     convert["proxyCharArray"]!();
   });
-
 
   it("patchRustSalsaAsyncDrops patches matching Parse<T>::drop sequences and returns original buffer when none match", () => {
     const clean = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]).buffer;
@@ -468,7 +602,7 @@ interface EmptyModel {}
   });
 });
 
-describe("CddWasmSdk.fromOpenApi", () => {
+describe("CddWasmSdk.fromOpenApi and CddWasmSdk.toDocsJson", () => {
   beforeEach(() => {
     vi.stubGlobal("WebAssembly", {
       compile: vi.fn().mockResolvedValue({}),
@@ -481,12 +615,19 @@ describe("CddWasmSdk.fromOpenApi", () => {
     vi.clearAllMocks();
   });
 
-  it("validates required options and throws CddValidationError when invalid", async () => {
+  it("validates required options in fromOpenApi and toDocsJson", async () => {
     await expect(
       CddWasmSdk.fromOpenApi(null as unknown as GenerateOptions),
     ).rejects.toThrow(CddValidationError);
     await expect(
       CddWasmSdk.fromOpenApi({} as unknown as GenerateOptions),
+    ).rejects.toThrow(CddValidationError);
+
+    await expect(
+      CddWasmSdk.toDocsJson(null as unknown as ToDocsJsonOptions),
+    ).rejects.toThrow(CddValidationError);
+    await expect(
+      CddWasmSdk.toDocsJson({} as unknown as ToDocsJsonOptions),
     ).rejects.toThrow(CddValidationError);
   });
 
@@ -500,6 +641,7 @@ describe("CddWasmSdk.fromOpenApi", () => {
       Inode
     >;
     expect(rootMap.has("spec.json")).toBe(true);
+    expect(rootMap.has("work")).toBe(true);
     expect(WASI).toHaveBeenCalledWith(
       ["cdd-rust", "from_openapi", "to_sdk", "-i", "/spec.json", "-o", "/out"],
       [
@@ -788,7 +930,7 @@ info:
     );
   });
 
-  it("supports exports.from_openapi reactor entrypoint, WASIProcExit, and error rethrow", async () => {
+  it("supports exports.from_openapi and exports.to_docs_json reactor entrypoints", async () => {
     vi.stubGlobal("WebAssembly", {
       compile: vi.fn().mockResolvedValue({}),
       instantiate: vi
@@ -813,6 +955,10 @@ info:
               throw new Error("reactor crash");
             },
           }),
+        )
+        .mockResolvedValueOnce(makeFakeInstance({ to_docs_json: () => 0 }))
+        .mockResolvedValueOnce(
+          makeFakeInstance({ to_docs_json: () => undefined }),
         ),
     });
 
@@ -828,6 +974,16 @@ info:
     await expect(CddWasmSdk.fromOpenApi(baseOptions())).rejects.toThrow(
       "reactor crash",
     );
+
+    const rDocs1 = await CddWasmSdk.toDocsJson(
+      baseOptions({ ecosystem: "cdd-kotlin" }),
+    );
+    expect(rDocs1).toEqual([]);
+
+    const rDocs2 = await CddWasmSdk.toDocsJson(
+      baseOptions({ ecosystem: "cdd-kotlin" }),
+    );
+    expect(rDocs2).toEqual([]);
   });
 
   it("throws CddEngineError for exports.main (GraalVM) or missing _start export", async () => {
@@ -914,7 +1070,7 @@ info:
     errSpy.mockRestore();
   });
 
-  it("executes cdd-java ecosystem across all targets and handles worker/missing globals", async () => {
+  it("executes cdd-java ecosystem across all targets including emitDocsJson and handles worker/missing globals", async () => {
     // 1. Missing CddJavaBrowser throws CddEngineError
     await expect(
       CddWasmSdk.fromOpenApi(baseOptions({ ecosystem: "cdd-java" })),
@@ -951,7 +1107,7 @@ info:
       CddWasmSdk.fromOpenApi(baseOptions({ ecosystem: "cdd-java" })),
     ).rejects.toThrow("Failed to instantiate CddJavaBrowser");
 
-    // 4. Successful execution across to_server, to_sdk_cli, to_orm, and to_sdk with location & self.GraalVM
+    // 4. Successful execution across to_server, to_sdk_cli, to_orm, to_sdk, generateDocsJson, emitDocsJson, and generateOpenApi
     const mockEngine: CddJavaBrowserEngine = {
       generateServer: vi
         .fn()
@@ -967,10 +1123,10 @@ info:
         .mockResolvedValue({ files: { "Sdk.java": "class Sdk {}" } }),
       generateDocsJson: vi
         .fn()
-        .mockResolvedValue({ files: { "docs.json": "{\"endpoints\":{}}" } }),
+        .mockResolvedValue({ files: { "docs.json": '{"endpoints":{}}' } }),
       generateOpenApi: vi
         .fn()
-        .mockResolvedValue({ files: { "openapi.json": "{\"openapi\":\"3.2.0\"}" } }),
+        .mockResolvedValue({ files: { "openapi.json": '{"openapi":"3.2.0"}' } }),
     };
 
     const recordedUrls: Array<{ wasmUrl: string; jsUrl: string }> = [];
@@ -1030,7 +1186,8 @@ info:
       baseOptions({
         ecosystem: "cdd-java",
         target: "to_docs_json",
-        additionalArgs: ["--no-imports", "--no-wrapping"],
+        noImports: true,
+        noWrapping: true,
       }),
     );
     expect(docsFiles[0]?.path).toBe("docs.json");
@@ -1038,6 +1195,29 @@ info:
       '{"openapi":"3.0.0"}',
       true,
       true,
+    );
+
+    // Test emitDocsJson returning string and CddJavaExecutionResult when generateDocsJson is absent
+    delete mockEngine.generateDocsJson;
+    mockEngine.emitDocsJson = vi
+      .fn()
+      .mockResolvedValueOnce('{"emitted":"string"}')
+      .mockResolvedValueOnce({ files: { "/out/docs.json": '{"emitted":"obj"}' } });
+
+    const emittedStrFiles = await CddWasmSdk.toDocsJson(
+      baseOptions({ ecosystem: "cdd-java", noImports: true }),
+    );
+    expect(emittedStrFiles[0]?.path).toBe("docs.json");
+    expect(new TextDecoder().decode(emittedStrFiles[0]!.content)).toBe(
+      '{"emitted":"string"}',
+    );
+
+    const emittedObjFiles = await CddWasmSdk.toDocsJson(
+      baseOptions({ ecosystem: "cdd-java", noWrapping: true }),
+    );
+    expect(emittedObjFiles[0]?.path).toBe("docs.json");
+    expect(new TextDecoder().decode(emittedObjFiles[0]!.content)).toBe(
+      '{"emitted":"obj"}',
     );
 
     const oaJavaFiles = await CddWasmSdk.fromOpenApi(
@@ -1056,7 +1236,6 @@ info:
     delete globalRef["self"];
     warnSpy.mockRestore();
   });
-
 
   it("mounts /src/input.hpp for cdd-cpp to_openapi and extracts schemas for cdd-ts to_openapi when Javy returns empty output", async () => {
     await CddWasmSdk.fromOpenApi(
@@ -1083,20 +1262,30 @@ info:
     expect(tsOaFiles[0]?.path).toBe("openapi.json");
   });
 
-  it("executes cdd-python and cdd-python-all ZIP archives via PyodideLoader", async () => {
+  it("executes cdd-python and cdd-python-all ZIP archives via PyodideLoader including stdout fallback", async () => {
     const zipBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x01, 0x02]);
     const writtenFiles = new Map<string, string | Uint8Array>();
     const argvItems: string[] = [];
     const pathItems: string[] = [];
     const ranCode: string[] = [];
+    let pyReturnResult: unknown = undefined;
+    let emptyOutDir = false;
 
     const fakePyodide: PyodideInstance = {
       FS: {
         writeFile: vi.fn((p: string, data: string | Uint8Array) => {
           writtenFiles.set(p, data);
         }),
-        mkdir: vi.fn().mockImplementationOnce(() => {}).mockImplementationOnce(() => { throw new Error("EEXIST"); }),
+        mkdir: vi
+          .fn()
+          .mockImplementationOnce(() => {})
+          .mockImplementationOnce(() => {
+            throw new Error("EEXIST");
+          }),
         readdir: vi.fn((dirPath: string) => {
+          if (emptyOutDir) {
+            return [".", ".."];
+          }
           if (dirPath === "/out") {
             return [".", "..", "pkg", "README.md"];
           }
@@ -1131,6 +1320,7 @@ info:
       unpackArchive: vi.fn(),
       runPythonAsync: vi.fn(async (code: string) => {
         ranCode.push(code);
+        return pyReturnResult;
       }),
     };
 
@@ -1171,8 +1361,9 @@ info:
       },
     ]);
 
-    // 2. cdd-python with empty specContent and additionalArgs
+    // 2. cdd-python with empty specContent, string stdout return, and additionalArgs
     writtenFiles.clear();
+    pyReturnResult = '{"py_stdout":true}';
     const pyFiles = await CddWasmSdk.fromOpenApi(
       baseOptions({
         ecosystem: "cdd-python",
@@ -1188,33 +1379,19 @@ info:
     expect(ranCode[1]).toContain("cdd.__main__.main()");
     expect(pyFiles).toHaveLength(2);
 
-    // 3. cdd-python-all without additionalArgs and cdd-python without additionalArgs
-    await CddWasmSdk.fromOpenApi(
-      baseOptions({
-        ecosystem: "cdd-python-all",
-        target: "to_sdk",
-        wasmBinary: zipBytes,
-        pyodideLoader: customLoader,
-      }),
-    );
-    expect(argvItems).toEqual([
-      "cdd-python-all",
-      "from_openapi",
-      "to_sdk",
-      "-i",
-      "/spec.json",
-      "-o",
-      "/out",
-    ]);
-
-    await CddWasmSdk.fromOpenApi(
-      baseOptions({
-        ecosystem: "cdd-python-all",
-        target: "to_docs_json",
-        wasmBinary: zipBytes,
-        pyodideLoader: customLoader,
-      }),
-    );
+    // 3. cdd-python-all to_docs_json with stdout fallback when /out is empty
+    emptyOutDir = true;
+    pyReturnResult = `info log
+{"python_docs":true}
+`;
+    const pyDocsStdout = await CddWasmSdk.toDocsJson({
+      ecosystem: "cdd-python-all",
+      specContent: '{"openapi":"3.0.0"}',
+      wasmBinary: zipBytes,
+      noImports: true,
+      noWrapping: true,
+      pyodideLoader: customLoader,
+    });
     expect(argvItems).toEqual([
       "cdd-python-all",
       "to_docs_json",
@@ -1222,7 +1399,17 @@ info:
       "/spec.json",
       "-o",
       "/out/docs.json",
+      "--no-imports",
+      "--no-wrapping",
     ]);
+    expect(pyDocsStdout).toHaveLength(1);
+    expect(pyDocsStdout[0]?.path).toBe("docs.json");
+    expect(new TextDecoder().decode(pyDocsStdout[0]!.content)).toBe(
+      '{"python_docs":true}',
+    );
+
+    emptyOutDir = false;
+    pyReturnResult = undefined;
 
     await CddWasmSdk.fromOpenApi(
       baseOptions({
@@ -1241,16 +1428,6 @@ info:
       "/out/openapi.json",
     ]);
 
-    await CddWasmSdk.fromOpenApi(
-      baseOptions({
-        ecosystem: "cdd-python",
-        target: "to_sdk",
-        wasmBinary: zipBytes,
-        pyodideLoader: customLoader,
-      }),
-    );
-    expect(argvItems).toEqual(["cdd"]);
-
     // 4. executePythonZipEcosystem using defaultPyodideLoader (no pyodideLoader passed)
     await expect(
       CddWasmSdk.fromOpenApi(
@@ -1261,5 +1438,98 @@ info:
         }),
       ),
     ).rejects.toThrow();
+  });
+
+  it("verifies target: 'to_docs_json' across all 13 ecosystems for both file-based (/out/docs.json and /work/out/docs.json) and stdout-based JSON fallback", async () => {
+    const wasiEcosystems: Ecosystem[] = [
+      "cdd-c",
+      "cdd-cpp",
+      "cdd-csharp",
+      "cdd-go",
+      "cdd-kotlin",
+      "cdd-php",
+      "cdd-ruby",
+      "cdd-rust",
+      "cdd-sh",
+      "cdd-swift",
+      "cdd-ts",
+    ];
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    for (const ecosystem of wasiEcosystems) {
+      // Case A: File written to /work/out/docs.json
+      vi.mocked(WASI).mockImplementationOnce(function (_args, _env, fds) {
+        return makeFakeWasi({
+          exitCode: 0,
+          onStart: () => {
+            const preopen = fds[3] as unknown as {
+              contents: Map<string, Inode>;
+            };
+            const workDir = preopen.contents.get("work") as Directory;
+            const workOutDir = workDir.contents.get("out") as Directory;
+            workOutDir.contents.set(
+              "docs.json",
+              new File(
+                new TextEncoder().encode(
+                  JSON.stringify({ ecosystem, mode: "file" }),
+                ),
+              ),
+            );
+          },
+        }) as unknown as WASI;
+      });
+
+      const fileRes = await CddWasmSdk.toDocsJson(
+        baseOptions({
+          ecosystem,
+          noImports: true,
+          noWrapping: true,
+          framework: "default",
+        }),
+      );
+      expect(fileRes).toHaveLength(1);
+      expect(fileRes[0]?.path).toBe("docs.json");
+      expect(JSON.parse(new TextDecoder().decode(fileRes[0]!.content))).toEqual({
+        ecosystem,
+        mode: "file",
+      });
+
+      // Case B: CLI prints JSON to stdout (with diagnostic logs on stderr and stdout)
+      vi.mocked(WASI).mockImplementationOnce(function (_args, _env, fds) {
+        return makeFakeWasi({
+          exitCode: 0,
+          onStart: () => {
+            const outFd = fds[1] as unknown as {
+              writeLine: (m: string) => void;
+            };
+            const errFd = fds[2] as unknown as {
+              writeLine: (m: string) => void;
+            };
+            errFd.writeLine(`[${ecosystem}] diagnostic stderr warning`);
+            outFd.writeLine(`[${ecosystem}] starting to_docs_json...`);
+            outFd.writeLine(JSON.stringify({ ecosystem, mode: "stdout" }));
+          },
+        }) as unknown as WASI;
+      });
+
+      const stdoutRes = await CddWasmSdk.toDocsJson(
+        baseOptions({
+          ecosystem,
+        }),
+      );
+      expect(stdoutRes).toHaveLength(1);
+      expect(stdoutRes[0]?.path).toBe("docs.json");
+      expect(
+        JSON.parse(new TextDecoder().decode(stdoutRes[0]!.content)),
+      ).toEqual({
+        ecosystem,
+        mode: "stdout",
+      });
+    }
+
+    warnSpy.mockRestore();
+    errSpy.mockRestore();
   });
 });
