@@ -88,6 +88,22 @@ export class CddEngineError extends CddSdkError {
 }
 
 /**
+ * Error originating from WebAssembly pre-conversion or guest execution in the browser.
+ * Extends `CddEngineError` for compatibility across `CddWasmSdk` operations.
+ */
+export class CddWasmError extends CddEngineError {
+  /**
+   * Constructs a new `CddWasmError`.
+   * @param message Specific WASM failure description.
+   * @param exitCode Optional non-zero exit code from the guest process.
+   * @param cause Optional underlying exception from the execution runtime.
+   */
+  constructor(message: string, exitCode?: number, cause?: unknown) {
+    super(message, exitCode, cause);
+  }
+}
+
+/**
  * Error thrown when input parameters or options fail validation.
  */
 export class CddValidationError extends CddSdkError {

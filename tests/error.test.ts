@@ -4,10 +4,24 @@ import {
   CddGatewayError,
   CddSdkError,
   CddValidationError,
+  CddWasmError,
   wrapError,
 } from "../src/index.js";
 
 describe("Error hierarchy and wrapError", () => {
+  it("constructs CddWasmError as a subclass of CddEngineError and CddSdkError", () => {
+    const cause = new Error("wasm trap");
+    const err = new CddWasmError("conversion failed", 2, cause);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).toBeInstanceOf(CddSdkError);
+    expect(err).toBeInstanceOf(CddEngineError);
+    expect(err).toBeInstanceOf(CddWasmError);
+    expect(err.name).toBe("CddWasmError");
+    expect(err.message).toBe("Engine execution failed: conversion failed");
+    expect(err.exitCode).toBe(2);
+    expect(err.cause).toBe(cause);
+  });
+
   it("constructs CddSdkError with message and optional cause", () => {
     const err = new CddSdkError("base error");
     expect(err).toBeInstanceOf(Error);

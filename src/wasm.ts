@@ -1,7 +1,7 @@
 /**
  * @module wasm
  * WebAssembly, WASI, GraalVM (WasmGC), and Pyodide execution engine for running
- * `cdd-*` OpenAPI code generators in the browser.
+ * `cdd-*` OpenAPI, Swagger 2.0, Arazzo 1.1.0, and Google Discovery code generators in the browser.
  */
 
 import {
@@ -13,7 +13,7 @@ import {
   PreopenDirectory,
   WASI,
 } from "@bjorn3/browser_wasi_shim";
-import { CddEngineError, CddValidationError } from "./error.js";
+import { CddEngineError, CddValidationError, CddWasmError } from "./error.js";
 
 /**
  * Supported ecosystems for CDD code generation.
@@ -46,6 +46,20 @@ export type Target =
   | "to_openapi"
   | "to_mcp"
   | "to_orm";
+
+/**
+ * Detected input specification format.
+ */
+export type SpecFormat =
+  | "openapi_3"
+  | "swagger_2"
+  | "arazzo_1"
+  | "google_discovery_1";
+
+/**
+ * Repository output topology mode for multi-language SDK generation.
+ */
+export type RepositoryTopologyMode = "monorepo" | "polyrepo";
 
 /**
  * Map of `cdd-*` ecosystems to their browser WebAssembly readiness status.
@@ -389,7 +403,7 @@ export interface WasiCommandInstance {
 }
 
 /**
- * Options for generating code from an OpenAPI specification.
+ * Options for generating code from an OpenAPI, Swagger 2.0, Arazzo 1.1.0, or Google Discovery specification.
  */
 export interface GenerateOptions {
   /**
@@ -398,12 +412,12 @@ export interface GenerateOptions {
   ecosystem: Ecosystem;
 
   /**
-   * The type of generation (e.g., `to_sdk`, `to_server`, `to_docs_json`).
+   * The type of generation (e.g., `to_sdk`, `to_sdk_cli`, `to_server`, `to_docs_json`).
    */
   target: Target;
 
   /**
-   * The OpenAPI specification content as a UTF-8 string or `Uint8Array`.
+   * The specification content as a UTF-8 string or `Uint8Array`.
    */
   specContent: string | Uint8Array;
 
@@ -433,9 +447,49 @@ export interface GenerateOptions {
   noWrapping?: boolean;
 
   /**
-   * Optional target framework name when generating documentation or SDKs (`--framework <name>`).
+   * Optional flag to enable Model Context Protocol (`--mcp`) generation across target languages.
+   */
+  mcp?: boolean;
+
+  /**
+   * Optional target framework name when generating documentation, servers, or SDKs (`--framework <name>`).
    */
   framework?: string;
+
+  /**
+   * Optional target ORM name (`--orm <name>`).
+   */
+  orm?: string;
+
+  /**
+   * Optional flag to enable auto-admin generation (`--auto-admin`).
+   */
+  autoAdmin?: boolean;
+
+  /**
+   * Optional flag to upgrade `to_sdk` generation to `to_sdk_cli`.
+   */
+  cli?: boolean;
+
+  /**
+   * Optional flag to generate test suites (`--tests`).
+   */
+  tests?: boolean;
+
+  /**
+   * Optional flag to omit GitHub Actions workflows (`--no-github-actions`).
+   */
+  noGithubActions?: boolean;
+
+  /**
+   * Optional flag to omit installable package boilerplate (`--no-installable-package`).
+   */
+  noInstallablePackage?: boolean;
+
+  /**
+   * Optional URL or binary for `cdd-cpp.wasm` used to pre-convert Google Discovery JSON to OpenAPI 3.2.0.
+   */
+  cppConverterWasmUrl?: string | Uint8Array | ArrayBuffer;
 
   /**
    * Optional override URL for `cdd-java.wasm` when using the `cdd-java` ecosystem.
@@ -480,6 +534,17 @@ export interface GeneratedFile {
 }
 
 /**
+ * Array of generated files returned by `CddWasmSdk.fromOpenApi` and `CddWasmSdk.generate`,
+ * optionally carrying `convertedOpenApiSpec` when Google Discovery JSON was pre-converted to OpenAPI 3.2.0.
+ */
+export type GeneratedFileList = GeneratedFile[] & {
+  /**
+   * The converted OpenAPI 3.2.0 JSON string when the input was Google Discovery JSON.
+   */
+  convertedOpenApiSpec?: string;
+};
+
+/**
  * Normalized OpenAPI specification representation used internally during execution.
  */
 export interface NormalizedSpec {
@@ -497,6 +562,11 @@ export interface NormalizedSpec {
    * Determined virtual filename (`"spec.json"` or `"spec.yaml"`).
    */
   fileName: "spec.json" | "spec.yaml";
+
+  /**
+   * Detected specification format (`"openapi_3"`, `"swagger_2"`, `"arazzo_1"`, or `"google_discovery_1"`).
+   */
+  format: SpecFormat;
 }
 
 /**
@@ -585,6 +655,65 @@ interface ExitCodeError {
 }
 
 /**
+ * Detects the specification format (`openapi_3`, `swagger_2`, `arazzo_1`, or `google_discovery_1`)
+ * by inspecting JSON or YAML root keys.
+ * @param specText UTF-8 specification text (JSON or YAML).
+ * @returns Detected `SpecFormat`.
+ */
+export function detectSpecFormat(specText: string): SpecFormat {
+  const trimmed = specText.trim();
+  if (trimmed.length === 0) {
+    return "openapi_3";
+  }
+
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        !Array.isArray(parsed)
+      ) {
+        const record = parsed as Record<string, unknown>;
+        if (
+          "discoveryVersion" in record ||
+          record["kind"] === "discovery#restDescription"
+        ) {
+          return "google_discovery_1";
+        }
+        if ("arazzo" in record) {
+          return "arazzo_1";
+        }
+        if ("swagger" in record) {
+          return "swagger_2";
+        }
+        if ("openapi" in record) {
+          return "openapi_3";
+        }
+      }
+    } catch {
+      // Fall through to line-based regex detection if JSON is partially malformed
+    }
+  }
+
+  if (
+    /^\s*["']?discoveryVersion["']?\s*:/m.test(trimmed) ||
+    /^\s*["']?kind["']?\s*:\s*["']?discovery#restDescription["']?/m.test(
+      trimmed,
+    )
+  ) {
+    return "google_discovery_1";
+  }
+  if (/^\s*["']?arazzo["']?\s*:/m.test(trimmed)) {
+    return "arazzo_1";
+  }
+  if (/^\s*["']?swagger["']?\s*:/m.test(trimmed)) {
+    return "swagger_2";
+  }
+  return "openapi_3";
+}
+
+/**
  * Normalizes a `Uint8Array` or `ArrayBuffer` into a standalone `ArrayBuffer` slice.
  * Fixes sub-view offset issues when a `Uint8Array` is a slice of a larger buffer.
  * @param binary Input `Uint8Array` or `ArrayBuffer`.
@@ -601,10 +730,11 @@ export function toArrayBuffer(binary: Uint8Array | ArrayBuffer): ArrayBuffer {
 }
 
 /**
- * Normalizes an OpenAPI specification input (`string` or `Uint8Array`) into
- * both UTF-8 bytes, text, and a detected filename (`"spec.json"` or `"spec.yaml"`).
- * @param specContent Input OpenAPI specification content.
- * @returns Normalized specification bytes, text, and filename.
+ * Normalizes an OpenAPI, Swagger 2.0, Arazzo 1.1.0, or Google Discovery specification input
+ * (`string` or `Uint8Array`) into UTF-8 bytes, text, detected filename (`"spec.json"` or `"spec.yaml"`),
+ * and detected `SpecFormat`.
+ * @param specContent Input specification content.
+ * @returns Normalized specification bytes, text, filename, and format.
  */
 export function normalizeSpecContent(
   specContent: string | Uint8Array,
@@ -622,12 +752,27 @@ export function normalizeSpecContent(
     bytes,
     text,
     fileName: isJson ? "spec.json" : "spec.yaml",
+    format: detectSpecFormat(text),
   };
 }
 
 /**
+ * Resolves the effective generation `Target`, upgrading `"to_sdk"` to `"to_sdk_cli"`
+ * when `options.cli === true`.
+ * @param options Code generation options.
+ * @returns Effective `Target`.
+ */
+export function resolveEffectiveTarget(options: GenerateOptions): Target {
+  if (options.cli === true && options.target === "to_sdk") {
+    return "to_sdk_cli";
+  }
+  return options.target;
+}
+
+/**
  * Builds the effective CLI `additionalArgs` array by combining `options.additionalArgs`
- * with typed flags (`noImports`, `noWrapping`, and `framework`) without duplicating flags.
+ * with typed flags (`mcp`, `noImports`, `noWrapping`, `framework`, `orm`, `autoAdmin`,
+ * `tests`, `noGithubActions`, and `noInstallablePackage`) without duplicating flags.
  * @param options Code generation options.
  * @returns Normalized array of additional CLI flag strings.
  */
@@ -635,6 +780,9 @@ export function buildEffectiveAdditionalArgs(
   options: GenerateOptions,
 ): string[] {
   const args = [...(options.additionalArgs ?? [])];
+  if (options.mcp === true && !args.includes("--mcp")) {
+    args.push("--mcp");
+  }
   if (options.noImports && !args.includes("--no-imports")) {
     args.push("--no-imports");
   }
@@ -648,7 +796,158 @@ export function buildEffectiveAdditionalArgs(
   ) {
     args.push("--framework", options.framework.trim());
   }
+  if (options.orm && options.orm.trim().length > 0 && !args.includes("--orm")) {
+    args.push("--orm", options.orm.trim());
+  }
+  if (options.autoAdmin === true && !args.includes("--auto-admin")) {
+    args.push("--auto-admin");
+  }
+  if (options.tests === true && !args.includes("--tests")) {
+    args.push("--tests");
+  }
+  if (
+    options.noGithubActions === true &&
+    !args.includes("--no-github-actions")
+  ) {
+    args.push("--no-github-actions");
+  }
+  if (
+    options.noInstallablePackage === true &&
+    !args.includes("--no-installable-package")
+  ) {
+    args.push("--no-installable-package");
+  }
   return args;
+}
+
+/**
+ * Builds the complete CLI argument array for invoking a `cdd-*` guest compiler binary.
+ * Automatically routes `arazzo_1` specifications to `from_arazzo` and `google_discovery_1`
+ * (when targeting `cdd-cpp` directly) to `from_google_discovery`.
+ * @param options Code generation options.
+ * @param specFilename Virtual filename of the mounted specification (e.g., `"spec.json"` or `"/spec.json"`).
+ * @param specFormat Detected `SpecFormat` of the input specification.
+ * @returns Array of CLI arguments starting with the ecosystem binary name.
+ */
+export function buildCliArgs(
+  options: GenerateOptions,
+  specFilename: string,
+  specFormat: SpecFormat = "openapi_3",
+): string[] {
+  const effectiveTarget = resolveEffectiveTarget(options);
+  const normalizedSpecPath = specFilename.startsWith("/")
+    ? specFilename
+    : `/${specFilename}`;
+
+  const fromSubcommand =
+    specFormat === "arazzo_1"
+      ? "from_arazzo"
+      : specFormat === "google_discovery_1" && options.ecosystem === "cdd-cpp"
+        ? "from_google_discovery"
+        : "from_openapi";
+
+  const rootCommandArgs =
+    effectiveTarget === "to_docs_json"
+      ? ["to_docs_json"]
+      : effectiveTarget === "to_openapi"
+        ? ["to_openapi"]
+        : [fromSubcommand, effectiveTarget];
+
+  const outputFlagValue =
+    effectiveTarget === "to_docs_json"
+      ? "/out/docs.json"
+      : effectiveTarget === "to_openapi"
+        ? "/out/openapi.json"
+        : "/out";
+
+  const inputFlagValue =
+    options.ecosystem === "cdd-cpp" && effectiveTarget === "to_openapi"
+      ? "/src"
+      : normalizedSpecPath;
+
+  const effectiveAdditionalArgs = buildEffectiveAdditionalArgs(options);
+
+  return [
+    options.ecosystem,
+    ...(options.ecosystem === "cdd-ruby" ? ["/bin/cdd-ruby"] : []),
+    ...(options.ecosystem === "cdd-php" ? ["-q", "/bin/cdd-php"] : []),
+    ...rootCommandArgs,
+    "-i",
+    inputFlagValue,
+    "-o",
+    outputFlagValue,
+    ...effectiveAdditionalArgs,
+  ];
+}
+
+/**
+ * Formats a repository directory/repository name for a Monorepo layout.
+ * @param githubOrgName GitHub organization or user name (e.g., `"offscale"`).
+ * @param customName Optional custom repository name override.
+ * @returns Trimmed `customName` if non-empty, otherwise `${githubOrgName}-sdk`.
+ */
+export function formatMonorepoName(
+  githubOrgName: string,
+  customName?: string,
+): string {
+  const trimmedCustom = customName?.trim();
+  if (trimmedCustom && trimmedCustom.length > 0) {
+    return trimmedCustom;
+  }
+  return `${githubOrgName.trim()}-sdk`;
+}
+
+/**
+ * Formats a repository directory/repository name for a Polyrepo (per-language) layout.
+ * @param githubOrgName GitHub organization or user name (e.g., `"offscale"`).
+ * @param languageSlug Short language identifier (e.g., `"python"`, `"rust"`, `"ts"`).
+ * @param customName Optional custom repository name override.
+ * @returns Trimmed `customName` if non-empty, otherwise `${githubOrgName}-sdk-${languageSlug}`.
+ */
+export function formatPolyrepoName(
+  githubOrgName: string,
+  languageSlug: string,
+  customName?: string,
+): string {
+  const trimmedCustom = customName?.trim();
+  if (trimmedCustom && trimmedCustom.length > 0) {
+    return trimmedCustom;
+  }
+  const cleanLang = languageSlug.trim().replace(/^cdd-/, "");
+  return `${githubOrgName.trim()}-sdk-${cleanLang}`;
+}
+
+/**
+ * Prefixes generated file paths according to the selected repository topology (`monorepo` vs `polyrepo`).
+ * - In `monorepo` mode: `${monorepoName}/${cleanLanguageSlug}/${file.path}`
+ * - In `polyrepo` mode: `${polyrepoName}/${file.path}`
+ * @param files Array of generated files from a compiler run.
+ * @param mode Repository topology mode (`"monorepo"` or `"polyrepo"`).
+ * @param githubOrgName GitHub organization or user name.
+ * @param languageSlug Target language slug (e.g., `"python"` or `"cdd-python"`).
+ * @param customRepoName Optional custom repository name override.
+ * @returns New array of `GeneratedFile` objects with topology-prefixed paths.
+ */
+export function prefixGeneratedFilesForTopology(
+  files: readonly GeneratedFile[],
+  mode: RepositoryTopologyMode,
+  githubOrgName: string,
+  languageSlug: string,
+  customRepoName?: string,
+): GeneratedFile[] {
+  const cleanLang = languageSlug.trim().replace(/^cdd-/, "");
+  const prefix =
+    mode === "monorepo"
+      ? `${formatMonorepoName(githubOrgName, customRepoName)}/${cleanLang}`
+      : formatPolyrepoName(githubOrgName, cleanLang, customRepoName);
+
+  return files.map((file) => {
+    const cleanFilePath = file.path.replace(/^\/+/, "");
+    return {
+      path: `${prefix}/${cleanFilePath}`,
+      content: file.content,
+    };
+  });
 }
 
 /**
@@ -980,8 +1279,7 @@ export function extractTypeScriptSchemasToOpenApi(
     const body = match[2]!;
     const properties: Record<string, Record<string, string>> = {};
     const required: string[] = [];
-    const propRegex =
-      /([A-Za-z0-9_]+)(\?)?\s*:\s*([^;\r\n]+?)(?:;|[\r\n]|$)/g;
+    const propRegex = /^\s*([A-Za-z0-9_]+)(\?)?\s*:\s*([^;]+?)(?:;|$)/gm;
     let propMatch: RegExpExecArray | null;
     while ((propMatch = propRegex.exec(body)) !== null) {
       const propName = propMatch[1]!;
@@ -1081,7 +1379,11 @@ export async function executeJavaEcosystem(
       }
     }
 
-    if (!scope.GraalVM && typeof scope.self !== "undefined" && scope.self.GraalVM) {
+    if (
+      !scope.GraalVM &&
+      typeof scope.self !== "undefined" &&
+      scope.self.GraalVM
+    ) {
       scope.GraalVM = scope.self.GraalVM;
     }
 
@@ -1118,6 +1420,7 @@ export async function executeJavaEcosystem(
     );
   }
 
+  const effectiveTarget = resolveEffectiveTarget(options);
   const effectiveArgs = buildEffectiveAdditionalArgs(options);
   const noGithubActions = Boolean(
     effectiveArgs.includes("--no-github-actions"),
@@ -1130,26 +1433,26 @@ export async function executeJavaEcosystem(
   const noWrapping = Boolean(effectiveArgs.includes("--no-wrapping"));
 
   let res: CddJavaExecutionResult;
-  if (options.target === "to_server") {
+  if (effectiveTarget === "to_server") {
     res = await engine.generateServer(specText);
-  } else if (options.target === "to_sdk_cli") {
+  } else if (effectiveTarget === "to_sdk_cli") {
     res = await engine.generateSdkCli(
       specText,
       noGithubActions,
       noInstallablePackage,
       includeTests,
     );
-  } else if (options.target === "to_orm") {
+  } else if (effectiveTarget === "to_orm") {
     res = await engine.generateOrm(specText);
-  } else if (options.target === "to_docs_json" && engine.generateDocsJson) {
+  } else if (effectiveTarget === "to_docs_json" && engine.generateDocsJson) {
     res = await engine.generateDocsJson(specText, noImports, noWrapping);
-  } else if (options.target === "to_docs_json" && engine.emitDocsJson) {
+  } else if (effectiveTarget === "to_docs_json" && engine.emitDocsJson) {
     const emitted = await engine.emitDocsJson(specText, noImports, noWrapping);
     res =
       typeof emitted === "string"
         ? { files: { "docs.json": emitted } }
         : emitted;
-  } else if (options.target === "to_openapi" && engine.generateOpenApi) {
+  } else if (effectiveTarget === "to_openapi" && engine.generateOpenApi) {
     res = await engine.generateOpenApi(specText);
   } else {
     res = await engine.generateSdk(
@@ -1167,7 +1470,7 @@ export async function executeJavaEcosystem(
       content: new TextEncoder().encode(content),
     });
   }
-  return options.target === "to_docs_json"
+  return effectiveTarget === "to_docs_json"
     ? normalizeDocsJsonFiles(results, "")
     : results;
 }
@@ -1206,6 +1509,7 @@ export async function executePythonZipEcosystem(
     // Ignore if /out already exists from a previous run on a warm Pyodide instance
   }
 
+  const effectiveTarget = resolveEffectiveTarget(options);
   const effectiveArgs = buildEffectiveAdditionalArgs(options);
   const sys = pyodide.pyimport("sys");
   sys.argv.clear();
@@ -1215,27 +1519,7 @@ export async function executePythonZipEcosystem(
   let pyRes: unknown;
 
   if (options.ecosystem === "cdd-python-all") {
-    const pySubcmd =
-      options.target === "to_docs_json"
-        ? ["to_docs_json"]
-        : options.target === "to_openapi"
-          ? ["to_openapi"]
-          : ["from_openapi", options.target];
-    const pyOutput =
-      options.target === "to_docs_json"
-        ? "/out/docs.json"
-        : options.target === "to_openapi"
-          ? "/out/openapi.json"
-          : "/out";
-    const pyArgs = [
-      "cdd-python-all",
-      ...pySubcmd,
-      "-i",
-      `/${spec.fileName}`,
-      "-o",
-      pyOutput,
-      ...effectiveArgs,
-    ];
+    const pyArgs = buildCliArgs(options, spec.fileName, spec.format);
     for (const arg of pyArgs) {
       sys.argv.append(arg);
     }
@@ -1305,7 +1589,7 @@ except SystemExit as e:
   }
 
   readPyDir("/out", "");
-  return options.target === "to_docs_json"
+  return effectiveTarget === "to_docs_json"
     ? normalizeDocsJsonFiles(results, pyStdout)
     : results;
 }
@@ -1378,6 +1662,43 @@ export function createWasmImports(
 }
 
 /**
+ * Resolves a `cdd-cpp.wasm` binary from `cppConverterWasmUrl` (which may be a `Uint8Array`,
+ * `ArrayBuffer`, URL string, or omitted to default to `/assets/wasm/cdd-cpp.wasm`).
+ * @param cppConverterWasmUrl Optional converter WASM binary or URL.
+ * @returns Promise resolving to the `ArrayBuffer` of `cdd-cpp.wasm`.
+ * @throws {CddWasmError} If fetching `cdd-cpp.wasm` fails.
+ */
+export async function resolveCppConverterBinary(
+  cppConverterWasmUrl?: string | Uint8Array | ArrayBuffer,
+): Promise<ArrayBuffer> {
+  if (
+    cppConverterWasmUrl instanceof Uint8Array ||
+    cppConverterWasmUrl instanceof ArrayBuffer
+  ) {
+    return toArrayBuffer(cppConverterWasmUrl);
+  }
+  const url =
+    typeof cppConverterWasmUrl === "string" &&
+    cppConverterWasmUrl.trim().length > 0
+      ? cppConverterWasmUrl.trim()
+      : "/assets/wasm/cdd-cpp.wasm";
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} fetching ${url}`);
+    }
+    return await response.arrayBuffer();
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new CddWasmError(
+      `Failed to load cdd-cpp.wasm converter from ${url}: ${msg}`,
+      undefined,
+      e,
+    );
+  }
+}
+
+/**
  * The CDD WebAssembly SDK class for executing `cdd-*` generators in-browser.
  */
 export class CddWasmSdk {
@@ -1402,8 +1723,141 @@ export class CddWasmSdk {
   }
 
   /**
-   * Convenience helper for generating `docs.json` from an OpenAPI specification
-   * across any supported `cdd-*` ecosystem.
+   * Converts a Google Discovery JSON document into an OpenAPI 3.2.0 JSON string in-browser
+   * by executing `cdd-cpp.wasm` with `from_google_discovery` inside a WASI Virtual File System.
+   * @param discoveryText Raw Google Discovery JSON string.
+   * @param cppWasmBinary The `cdd-cpp.wasm` binary (`Uint8Array` or `ArrayBuffer`).
+   * @returns Promise resolving to the converted OpenAPI 3.2.0 JSON string.
+   * @throws {CddWasmError} If `cdd-cpp.wasm` fails or produces empty output.
+   */
+  static async convertGoogleDiscoveryToOpenApi(
+    discoveryText: string,
+    cppWasmBinary: Uint8Array | ArrayBuffer,
+  ): Promise<string> {
+    if (!discoveryText || discoveryText.trim().length === 0) {
+      throw new CddWasmError("Google Discovery input must not be empty");
+    }
+
+    const discoveryBytes = new TextEncoder().encode(discoveryText);
+    const specDir = new Directory(
+      new Map<string, Inode>([["discovery.json", new File(discoveryBytes)]]),
+    );
+    const outDir = new Directory(new Map<string, Inode>());
+    const rootMap = new Map<string, Inode>([
+      ["spec", specDir],
+      ["out", outDir],
+    ]);
+    const rootPreopen = new PreopenDirectory("/", rootMap);
+
+    const args = [
+      "cdd-cpp",
+      "from_google_discovery",
+      "-i",
+      "/spec/discovery.json",
+      "-o",
+      "/out/openapi.json",
+    ];
+    const env = [
+      "CDD_COMMAND=from_google_discovery",
+      "CDD_ARGS=from_google_discovery -i /spec/discovery.json -o /out/openapi.json",
+      "INPUT=/spec/discovery.json",
+      "OUTPUT_DIR=out",
+    ];
+
+    let capturedStdout = "";
+    const stdinFile = new OpenFile(new File(new Uint8Array([])));
+    const stdoutFd = ConsoleStdout.lineBuffered((msg: string): void => {
+      capturedStdout += `${msg}
+`;
+    });
+    const stderrFd = ConsoleStdout.lineBuffered((): void => {});
+    const wasi = new WASI(args, env, [
+      stdinFile,
+      stdoutFd,
+      stderrFd,
+      rootPreopen,
+    ]);
+
+    const slicedBuffer = toArrayBuffer(cppWasmBinary);
+    let exitCode = 0;
+
+    try {
+      const module = await WebAssembly.compile(slicedBuffer);
+      const wasmImports = createWasmImports(
+        wasi.wasiImport as Record<string, unknown>,
+        (code: number): void => {
+          exitCode = code;
+        },
+      );
+      const instance = await WebAssembly.instantiate(module, wasmImports);
+      const exports = instance.exports as unknown as CddWasmExports;
+      if (exports._start) {
+        exitCode = wasi.start(instance as unknown as WasiCommandInstance);
+      } else {
+        throw new CddWasmError(
+          "cdd-cpp.wasm binary missing _start export for Google Discovery conversion",
+        );
+      }
+    } catch (e: unknown) {
+      if (e instanceof CddWasmError) {
+        throw e;
+      }
+      const errObj = e as ExitCodeError | null;
+      if (errObj && typeof errObj.code === "number") {
+        exitCode = errObj.code;
+      } else {
+        const msg = e instanceof Error ? e.message : String(e);
+        throw new CddWasmError(
+          `Google Discovery conversion failed: ${msg}`,
+          undefined,
+          e,
+        );
+      }
+    }
+
+    if (exitCode !== 0) {
+      throw new CddWasmError(
+        `Google Discovery conversion exited with code ${exitCode}`,
+        exitCode,
+      );
+    }
+
+    const files = collectWasiOutputFiles(outDir);
+    const oaFile = files.find(
+      (f) => f.path === "openapi.json" || f.path.endsWith("/openapi.json"),
+    ) ?? files[0];
+    if (oaFile && oaFile.content.byteLength > 0) {
+      const text = new TextDecoder().decode(oaFile.content).trim();
+      if (text.length > 0) {
+        return text;
+      }
+    }
+
+    const fromStdout = extractJsonFromStdout(capturedStdout);
+    if (fromStdout !== null) {
+      return fromStdout;
+    }
+
+    throw new CddWasmError(
+      "Google Discovery conversion produced empty OpenAPI output",
+    );
+  }
+
+  /**
+   * Convenience alias for `CddWasmSdk.fromOpenApi` that supports OpenAPI 3.x, Swagger 2.0,
+   * Arazzo 1.1.0, and Google Discovery JSON specifications.
+   * @param options The generation options.
+   * @returns A promise that resolves to the generated file list (with `convertedOpenApiSpec` attached when converted from Google Discovery).
+   * @throws {CddValidationError} If `options` contains invalid or missing required fields.
+   * @throws {CddEngineError} If the WASM binary is invalid or guest execution fails.
+   */
+  static async generate(options: GenerateOptions): Promise<GeneratedFileList> {
+    return CddWasmSdk.fromOpenApi(options);
+  }
+
+  /**
+   * Convenience helper for generating `docs.json` from an OpenAPI, Swagger 2.0, Arazzo 1.1.0,
+   * or Google Discovery specification across any supported `cdd-*` ecosystem.
    * Automatically sets `target: "to_docs_json"`, forwards `--no-imports`, `--no-wrapping`,
    * and `--framework` flags, and guarantees `"docs.json"` path normalization.
    * @param options Generation options (with `target` optional and defaulting to `"to_docs_json"`).
@@ -1413,7 +1867,7 @@ export class CddWasmSdk {
    */
   static async toDocsJson(
     options: ToDocsJsonOptions,
-  ): Promise<GeneratedFile[]> {
+  ): Promise<GeneratedFileList> {
     if (!options || !options.ecosystem) {
       throw new CddValidationError("ecosystem and target are required");
     }
@@ -1424,26 +1878,60 @@ export class CddWasmSdk {
   }
 
   /**
-   * Generates code from an OpenAPI specification using the provided WASM binary.
+   * Generates code from an OpenAPI, Swagger 2.0, Arazzo 1.1.0, or Google Discovery specification
+   * using the provided WASM binary.
+   * Automatically pre-converts Google Discovery JSON to OpenAPI 3.2.0 via `cdd-cpp.wasm` when
+   * targeting non-`cdd-cpp` ecosystems or `to_docs_json`.
    * @param options The generation options, including ecosystem, target, spec content, and WASM binary.
-   * @returns A promise that resolves to an array of generated files.
+   * @returns A promise that resolves to an array of generated files (with `convertedOpenApiSpec` when pre-converted).
    * @throws {CddValidationError} If `options` contains invalid or missing required fields.
    * @throws {CddEngineError} If the WASM binary is invalid or guest execution fails.
    */
-  static async fromOpenApi(options: GenerateOptions): Promise<GeneratedFile[]> {
+  static async fromOpenApi(
+    options: GenerateOptions,
+  ): Promise<GeneratedFileList> {
     if (!options || !options.ecosystem || !options.target) {
       throw new CddValidationError("ecosystem and target are required");
     }
 
-    const spec = normalizeSpecContent(options.specContent);
+    const effectiveTarget = resolveEffectiveTarget(options);
+    let spec = normalizeSpecContent(options.specContent);
+    let convertedOpenApiSpec: string | undefined;
+
+    if (
+      spec.format === "google_discovery_1" &&
+      (options.ecosystem !== "cdd-cpp" || effectiveTarget === "to_docs_json")
+    ) {
+      const cppBinary =
+        options.ecosystem === "cdd-cpp"
+          ? toArrayBuffer(options.wasmBinary)
+          : await resolveCppConverterBinary(options.cppConverterWasmUrl);
+      convertedOpenApiSpec = await CddWasmSdk.convertGoogleDiscoveryToOpenApi(
+        spec.text,
+        cppBinary,
+      );
+      spec = normalizeSpecContent(convertedOpenApiSpec);
+    }
+
     const rawBuffer = toArrayBuffer(options.wasmBinary);
     const slicedBuffer =
       options.ecosystem === "cdd-rust"
         ? patchRustSalsaAsyncDrops(rawBuffer)
         : rawBuffer;
 
+    const attachConvertedSpec = (
+      files: GeneratedFile[],
+    ): GeneratedFileList => {
+      const out: GeneratedFileList = [...files];
+      if (convertedOpenApiSpec !== undefined) {
+        out.convertedOpenApiSpec = convertedOpenApiSpec;
+      }
+      return out;
+    };
+
     if (options.ecosystem === "cdd-java") {
-      return executeJavaEcosystem(options, spec.text);
+      const javaFiles = await executeJavaEcosystem(options, spec.text);
+      return attachConvertedSpec(javaFiles);
     }
 
     if (
@@ -1451,7 +1939,12 @@ export class CddWasmSdk {
         options.ecosystem === "cdd-python-all") &&
       isZipArchive(slicedBuffer)
     ) {
-      return executePythonZipEcosystem(options, slicedBuffer, spec);
+      const pyFiles = await executePythonZipEcosystem(
+        options,
+        slicedBuffer,
+        spec,
+      );
+      return attachConvertedSpec(pyFiles);
     }
 
     const specFile = new File(spec.bytes);
@@ -1469,10 +1962,12 @@ export class CddWasmSdk {
       ["work", workDir],
     ]);
 
-    if (options.ecosystem === "cdd-cpp" && options.target === "to_openapi") {
+    if (options.ecosystem === "cdd-cpp" && effectiveTarget === "to_openapi") {
       rootMap.set(
         "src",
-        new Directory(new Map<string, Inode>([["input.hpp", new File(spec.bytes)]])),
+        new Directory(
+          new Map<string, Inode>([["input.hpp", new File(spec.bytes)]]),
+        ),
       );
     }
 
@@ -1486,45 +1981,23 @@ export class CddWasmSdk {
     }
 
     const rootPreopen = new PreopenDirectory("/", rootMap);
+    const args = buildCliArgs(options, spec.fileName, spec.format);
 
-    const rootCommandArgs =
-      options.target === "to_docs_json"
-        ? ["to_docs_json"]
-        : options.target === "to_openapi"
-          ? ["to_openapi"]
-          : ["from_openapi", options.target];
-
-    const outputFlagValue =
-      options.target === "to_docs_json"
-        ? "/out/docs.json"
-        : options.target === "to_openapi"
-          ? "/out/openapi.json"
-          : "/out";
-
-    const inputFlagValue =
-      options.ecosystem === "cdd-cpp" && options.target === "to_openapi"
-        ? "/src"
-        : `/${spec.fileName}`;
-
-    const effectiveAdditionalArgs = buildEffectiveAdditionalArgs(options);
-
-    const args = [
-      options.ecosystem,
-      ...(options.ecosystem === "cdd-ruby" ? ["/bin/cdd-ruby"] : []),
-      ...(options.ecosystem === "cdd-php" ? ["-q", "/bin/cdd-php"] : []),
-      ...rootCommandArgs,
-      "-i",
-      inputFlagValue,
-      "-o",
-      outputFlagValue,
-      ...effectiveAdditionalArgs,
-    ];
+    const primaryCommand = args.includes("from_arazzo")
+      ? "from_arazzo"
+      : args.includes("from_google_discovery")
+        ? "from_google_discovery"
+        : args.includes("from_openapi")
+          ? "from_openapi"
+          : effectiveTarget === "to_docs_json"
+            ? "to_docs_json"
+            : "to_openapi";
 
     const env: string[] =
       options.ecosystem === "cdd-php"
         ? [`INPUT=/${spec.fileName}`, `OUTPUT_DIR=out`]
         : [
-            `CDD_COMMAND=${args.includes("from_openapi") ? "from_openapi" : rootCommandArgs[0]!}`,
+            `CDD_COMMAND=${primaryCommand}`,
             `CDD_ARGS=${args.slice(1).join(" ")}`,
             `INPUT=/${spec.fileName}`,
             `OUTPUT_DIR=out`,
@@ -1601,7 +2074,7 @@ export class CddWasmSdk {
     const exports = instance.exports as unknown as CddWasmExports;
 
     try {
-      if (options.target === "to_docs_json" && exports.to_docs_json) {
+      if (effectiveTarget === "to_docs_json" && exports.to_docs_json) {
         wasi.initialize(instance as unknown as WasiReactorInstance);
         const ret = exports.to_docs_json();
         if (typeof ret === "number") {
@@ -1657,16 +2130,18 @@ export class CddWasmSdk {
 
     if (
       options.ecosystem === "cdd-ts" &&
-      options.target === "to_openapi" &&
+      effectiveTarget === "to_openapi" &&
       results.length === 0
     ) {
       results.push(...extractTypeScriptSchemasToOpenApi(spec.text));
     }
 
-    if (options.target === "to_docs_json") {
-      return normalizeDocsJsonFiles(results, capturedStdout);
+    if (effectiveTarget === "to_docs_json") {
+      return attachConvertedSpec(
+        normalizeDocsJsonFiles(results, capturedStdout),
+      );
     }
 
-    return results;
+    return attachConvertedSpec(results);
   }
 }

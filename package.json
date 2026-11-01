@@ -1,6 +1,6 @@
 {
   "name": "cdd-browser-sdk",
-  "version": "0.0.1",
+  "version": "0.0.5",
   "description": "Browser-native SDK for executing cdd-* OpenAPI generators via WASM",
   "type": "module",
   "main": "dist/src/index.js",

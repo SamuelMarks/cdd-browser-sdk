@@ -95,7 +95,7 @@ export class CddMcpClient {
     this.client = new Client(
       {
         name: "cdd-browser-sdk",
-        version: "0.0.1",
+        version: "0.0.5",
       },
       {
         capabilities: {},

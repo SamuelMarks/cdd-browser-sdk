@@ -18,7 +18,11 @@ _(Note: Depending on your build environment, you may need a bundler that support
 ## Usage
 
 ```typescript
-import { CddWasmSdk } from "cdd-browser-sdk";
+import {
+  CddWasmSdk,
+  detectSpecFormat,
+  prefixGeneratedFilesForTopology,
+} from "cdd-browser-sdk";
 
 // Example: Fetch your required cdd-language WASM binary
 // Usually downloaded directly from GitHub releases or bundled with your frontend
@@ -31,16 +35,35 @@ const openApiSpec = JSON.stringify({
   // ...
 });
 
+// Detect specification format ("openapi_3" | "swagger_2" | "arazzo_1" | "google_discovery_1")
+const format = detectSpecFormat(openApiSpec);
+
 const generatedFiles = await CddWasmSdk.fromOpenApi({
   ecosystem: "cdd-python",
   target: "to_sdk",
   specContent: openApiSpec,
   wasmBinary: wasmBinary,
   printStdout: true,
+  mcp: true,
+  framework: "fastapi",
+  orm: "sqlalchemy",
+  autoAdmin: true,
+  cli: false,
+  tests: true,
+  noGithubActions: false,
+  noInstallablePackage: false,
 });
 
+// Prefix paths for Monorepo ("offscale-sdk/python/...") or Polyrepo ("offscale-sdk-python/...")
+const monorepoFiles = prefixGeneratedFilesForTopology(
+  generatedFiles,
+  "monorepo",
+  "offscale",
+  "cdd-python",
+);
+
 // Output generated SDK files
-for (const file of generatedFiles) {
+for (const file of monorepoFiles) {
   console.log(`Generated: ${file.path}`);
   const textContent = new TextDecoder().decode(file.content);
   console.log(textContent);
